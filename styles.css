@@ -409,6 +409,7 @@ body.readonly #tool-group,
 body.readonly #color-group,
 body.readonly #size-group,
 body.readonly #btn-touchdraw,
+body.readonly #btn-image,
 body.readonly #btn-clear,
 body.readonly #selection-bar { display: none; }
 body.readonly #board { cursor: grab; }

@@ -29,4 +29,18 @@ window.APP_CONFIG = {
    *  - ['*']: 모든 오리진 허용 (개발용 — 운영에서는 사용하지 말 것)
    */
   embedAllowedOrigins: null,
+
+  /**
+   * 노트 저장 REST API 베이스 URL (선택).
+   *
+   * 지정하면 단독 실행 모드에서 localStorage 캐시와 함께 서버에도 저장한다
+   * (임베드 모드에서는 사용하지 않음 — 저장은 호스트 ELN 책임).
+   *  - GET    {apiBase}/notes           → { "notes": [note, ...] } 또는 [note, ...]
+   *  - PUT    {apiBase}/notes/{id}      → 본문: note JSON
+   *  - DELETE {apiBase}/notes/{id}
+   * 서버 연결에 실패하면 로컬 저장만 유지하고 안내를 띄운다.
+   *
+   * 예: apiBase: '/api'
+   */
+  apiBase: null,
 };

@@ -51,6 +51,8 @@ class DrawingEngine {
     this.selection = null;        // { strokes: Set, bbox: {minX,minY,maxX,maxY} }
     this.lassoPath = null;        // 진행 중인 올가미 경로 (월드 좌표)
 
+    this._imgCache = new Map();   // 이미지 획의 src → HTMLImageElement
+
     this._dirty = true;
     this._bgDirty = true;
     this._raf = null;
@@ -235,6 +237,44 @@ class DrawingEngine {
     this._setSelection(clones);
     this.requestRender(true);
     this._emitChange(true);
+  }
+
+  /* ============== 이미지 삽입 ============== */
+
+  /** 이미지를 뷰포트 중앙에 삽입하고 바로 선택 상태로 만든다 (올가미로 이동 가능) */
+  addImage(src, naturalW, naturalH) {
+    if (this.readonly || !naturalW || !naturalH) return null;
+    const rect = this.canvas.getBoundingClientRect();
+    const center = this.screenToWorld(rect.width / 2, rect.height / 2);
+    // 화면의 60%를 넘지 않게 축소 배치
+    const maxW = (rect.width * 0.6) / this.scale;
+    const maxH = (rect.height * 0.6) / this.scale;
+    const k = Math.min(1, maxW / naturalW, maxH / naturalH);
+    const w = naturalW * k, h = naturalH * k;
+    const stroke = {
+      tool: 'image', src, size: 0, t: Date.now(),
+      points: [
+        [round2(center.x - w / 2), round2(center.y - h / 2)],
+        [round2(center.x + w / 2), round2(center.y + h / 2)],
+      ],
+    };
+    this.strokes.push(stroke);
+    this._pushUndo({ type: 'add', stroke });
+    this._setSelection([stroke]);
+    this.requestRender(true);
+    this._emitChange(true);
+    return stroke;
+  }
+
+  _getImage(src) {
+    let img = this._imgCache.get(src);
+    if (!img) {
+      img = new Image();
+      img.onload = () => this.requestRender(true);
+      img.src = src;
+      this._imgCache.set(src, img);
+    }
+    return img;
   }
 
   _selectionContains(wx, wy) {
@@ -635,6 +675,9 @@ class DrawingEngine {
     let removedAny = false;
     for (let i = this.strokes.length - 1; i >= 0; i--) {
       const s = this.strokes[i];
+      // 이미지는 지우개로 지우지 않는다 (사진 위 주석을 지우다 배경까지 지워지는 것 방지)
+      // → 이미지 삭제는 올가미 선택 후 삭제로만
+      if (s.tool === 'image') continue;
       if (this._strokeHit(s, w.x, w.y, r + s.size / 2)) {
         this.erasedInDrag.push({ stroke: s, index: i });
         this.strokes.splice(i, 1);
@@ -646,6 +689,11 @@ class DrawingEngine {
 
   _strokeHit(stroke, x, y, r) {
     const r2 = r * r;
+    if (stroke.tool === 'image') {
+      const [[ax, ay], [bx, by]] = stroke.points;
+      return x >= Math.min(ax, bx) - r && x <= Math.max(ax, bx) + r &&
+             y >= Math.min(ay, by) - r && y <= Math.max(ay, by) + r;
+    }
     // 도형은 외곽선 샘플 선분과의 거리로 판정
     const pts = stroke.tool === 'shape' ? shapeOutline(stroke) : stroke.points;
     if (pts.length === 1) {
@@ -796,6 +844,11 @@ class DrawingEngine {
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
 
+    if (stroke.tool === 'image') {
+      this._drawImage(ctx, stroke, override);
+      return;
+    }
+
     if (stroke.tool === 'shape') {
       this._drawShape(ctx, stroke, boost);
       return;
@@ -846,6 +899,26 @@ class DrawingEngine {
       ctx.lineWidth = Math.max(0.4, widthAt((p + pts[i - 1][2]) / 2));
       ctx.stroke();
       prevMidX = midX; prevMidY = midY;
+    }
+  }
+
+  _drawImage(ctx, stroke, override) {
+    const [[ax, ay], [bx, by]] = stroke.points;
+    const x = Math.min(ax, bx), y = Math.min(ay, by);
+    const w = Math.abs(bx - ax), h = Math.abs(by - ay);
+    if (override) {
+      // 선택 강조: 반투명 덮개 (호출부에서 globalAlpha 적용됨)
+      ctx.fillRect(x, y, w, h);
+      return;
+    }
+    const img = this._getImage(stroke.src);
+    if (img.complete && img.naturalWidth > 0) {
+      ctx.drawImage(img, x, y, w, h);
+    } else {
+      // 로딩 중 자리표시
+      ctx.strokeStyle = '#c3c9d1';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x, y, w, h);
     }
   }
 
@@ -976,8 +1049,17 @@ function shapeOutline(stroke) {
   }
 }
 
-/* 선택 판정용 샘플 점: 자유 곡선은 자체 점, 도형은 외곽선 샘플 */
+/* 선택 판정용 샘플 점: 자유 곡선은 자체 점, 도형/이미지는 외곽선 샘플 */
 function strokeSamplePoints(stroke) {
+  if (stroke.tool === 'image') {
+    const [[ax, ay], [bx, by]] = stroke.points;
+    const cx = (ax + bx) / 2, cy = (ay + by) / 2;
+    return [
+      [ax, ay], [bx, ay], [bx, by], [ax, by],       // 꼭짓점
+      [cx, ay], [bx, cy], [cx, by], [ax, cy],       // 변 중점
+      [cx, cy],                                      // 중심
+    ];
+  }
   if (stroke.tool === 'shape') {
     const out = shapeOutline(stroke);
     // 선분 중점도 포함해 판정 정확도 향상

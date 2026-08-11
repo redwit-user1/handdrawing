@@ -49,16 +49,22 @@
 | type | payload | 시점 |
 | --- | --- | --- |
 | `handdrawing:ready` | `version` | 에디터 초기화 완료 (이후 `load`를 보낼 것) |
-| `handdrawing:change` | `note{title,strokes,updated}`, `sha256`, `strokeCount` | 편집 후 400ms 디바운스 |
+| `handdrawing:change` | `note{title,strokes,updated}`, `sha256`, `strokeCount`, `baseRev` | 편집 후 400ms 디바운스 |
 | `handdrawing:export-result` | `requestId`, `format`, `dataUrl`(png/pdf) 또는 `json`, 실패 시 `error` | `export` 요청 응답 |
 
 ELN → 에디터:
 
 | type | payload | 용도 |
 | --- | --- | --- |
-| `handdrawing:load` | `note{title,strokes}` 또는 `null`(새 노트) | 저장된 노트 주입 |
+| `handdrawing:load` | `note{title,strokes}` 또는 `null`(새 노트), `rev`(선택) | 저장된 노트 주입 |
+| `handdrawing:ack-save` | `rev` | 저장 성공 통지 — 이후 `change.baseRev` 갱신 |
 | `handdrawing:set-readonly` | `readonly: boolean` | 열람/편집 전환 |
 | `handdrawing:export` | `requestId`, `format: 'png'\|'pdf'\|'json'` | 렌더링 결과 요청 |
+
+**동시 편집 충돌 감지**: `load`에 저장본 리비전 `rev`를 실어 보내면 이후 모든
+`change`에 `baseRev`로 되돌아온다. ELN 서버는 저장 시 `baseRev ≠ 현재 리비전`이면
+충돌(다른 세션이 먼저 저장)로 처리하고, 저장 성공 시 `ack-save`로 새 리비전을
+내려 다음 변경부터 갱신된 `baseRev`가 실리게 한다.
 
 동작하는 호스트 예시: [`examples/eln-host-demo.html`](../examples/eln-host-demo.html)
 
@@ -88,7 +94,11 @@ ELN → 에디터:
       "points": [[x, y, pressure], ...] },   // 월드 좌표, 소수 2자리
     { "tool": "shape", "shape": "rect",       // line | arrow | rect | ellipse
       "color": "#2563eb", "size": 5, "t": 1770000000000,
-      "points": [[x0, y0], [x1, y1]] }
+      "points": [[x0, y0], [x1, y1]] },
+    { "tool": "image",                        // 삽입된 이미지 (실험 사진 등)
+      "src": "data:image/jpeg;base64,...",    // 긴 변 1600px 이하로 축소 저장
+      "size": 0, "t": 1770000000000,
+      "points": [[x0, y0], [x1, y1]] }        // 배치 사각형 (월드 좌표)
   ]
 }
 ```
@@ -120,13 +130,16 @@ ELN → 에디터:
    `frame-src`에 에디터 오리진 추가 + 에디터 `config.js`의
    `embedAllowedOrigins`에 ELN 오리진 명시(양방향 화이트리스트).
 
-## 4. 에디터 쪽 남은 개선 항목 (연계 고도화 시)
+## 4. 에디터 쪽 개선 항목 진행 현황
 
-- **동시 편집 잠금**: 현재 단일 사용자 전제. ELN에서 같은 노트를 두 명이 열면
-  마지막 저장이 이긴다 → ELN 쪽 편집 잠금(체크아웃) 또는 버전 충돌 감지 필요.
-- **대용량 노트**: 획 수천 개 이상이면 postMessage 페이로드가 커진다.
-  필요 시 증분 전송(추가/삭제된 획만)으로 프로토콜 v2 확장 여지 있음.
-- **이미지 배경 삽입**: 실험 사진 위에 주석을 다는 유스케이스가 있다면
-  배경 이미지 레이어 추가 필요 (현재 미구현).
-- **서버 저장 어댑터**: 임베드가 아닌 단독 실행에서도 REST 저장이 필요하면
-  Store를 어댑터로 추상화해 `/api/notes` 연동 추가.
+- ✅ **동시 편집 충돌 감지**: `rev`/`baseRev`/`ack-save` 프로토콜 구현 (§2.2).
+  서버 쪽 충돌 판정·잠금 정책은 ELN 몫.
+- ✅ **이미지 삽입**: 파일 선택·클립보드 붙여넣기로 실험 사진을 노트에 넣고
+  위에 주석 필기 가능. 긴 변 1600px로 축소 저장, 올가미로 이동/삭제,
+  지우개는 이미지를 지우지 않음(주석만 지워짐), PNG/PDF 내보내기에 포함.
+- ✅ **서버 저장 어댑터**: `config.js`의 `apiBase` 설정 시 단독 실행 모드에서
+  localStorage 캐시 + REST 서버(`GET/PUT/DELETE {apiBase}/notes`) 동시 저장.
+  서버 장애 시 로컬 저장으로 자동 유지.
+- ⬜ **대용량 노트 증분 전송**: 획 수천 개 이상이면 postMessage 페이로드가
+  커진다. 필요 시 추가/삭제된 획만 보내는 프로토콜 v2로 확장 (현재는 이미지
+  포함 노트도 수 MB 수준까지는 문제없음).

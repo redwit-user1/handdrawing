@@ -1,5 +1,5 @@
 /* 간단한 오프라인 캐시 서비스 워커 */
-const CACHE = 'handdrawing-v4';
+const CACHE = 'handdrawing-v5';
 const ASSETS = [
   '.',
   'index.html',

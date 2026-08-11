@@ -47,5 +47,41 @@ const Store = (() => {
     }
   }
 
-  return { load, save, newNote, uid };
+  /**
+   * REST 저장 어댑터 (config.js의 apiBase 설정 시 활성).
+   * API 사양:
+   *   GET    {apiBase}/notes      → { notes: [...] } 또는 [...]
+   *   PUT    {apiBase}/notes/{id} → 본문: note JSON
+   *   DELETE {apiBase}/notes/{id}
+   */
+  const remote = {
+    base() {
+      return (window.APP_CONFIG && window.APP_CONFIG.apiBase) || null;
+    },
+    enabled() {
+      return !!remote.base();
+    },
+    async list() {
+      const res = await fetch(remote.base() + '/notes');
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      return Array.isArray(data) ? data : data.notes;
+    },
+    async put(note) {
+      const res = await fetch(remote.base() + '/notes/' + encodeURIComponent(note.id), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(note),
+      });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+    },
+    async remove(id) {
+      const res = await fetch(remote.base() + '/notes/' + encodeURIComponent(id), {
+        method: 'DELETE',
+      });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+    },
+  };
+
+  return { load, save, newNote, uid, remote };
 })();

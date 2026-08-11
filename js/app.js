@@ -59,6 +59,34 @@
     note.updated = Date.now();
     if (EMBED) { Bridge.sendChange(note); return; }
     if (!Store.save(state)) toast('저장 공간이 부족합니다');
+    if (Store.remote.enabled()) Store.remote.put(note).catch(remoteError);
+  }
+
+  /* ============== 서버 동기화 (config.apiBase) ============== */
+  let serverWarned = false;
+  function remoteError(e) {
+    console.warn('서버 동기화 실패:', e);
+    if (!serverWarned) {
+      serverWarned = true;
+      toast('서버 동기화 실패 — 로컬에만 저장됩니다');
+    }
+  }
+
+  async function syncFromServer() {
+    try {
+      const notes = await Store.remote.list();
+      if (Array.isArray(notes) && notes.length > 0) {
+        state.notes = notes;
+        if (!notes.some(n => n.id === state.currentId)) state.currentId = notes[0].id;
+        Store.save(state);
+        const cur = currentNote();
+        engine.setStrokes(cur.strokes);
+        $('#note-title').value = cur.title;
+        renderNotesList();
+      }
+    } catch (e) {
+      remoteError(e);
+    }
   }
 
   document.addEventListener('visibilitychange', () => {
@@ -121,6 +149,7 @@
     if (!note) return;
     if (!confirm(`"${note.title}" 노트를 삭제할까요?`)) return;
     state.notes = state.notes.filter(n => n.id !== id);
+    if (Store.remote.enabled()) Store.remote.remove(id).catch(remoteError);
     if (state.notes.length === 0) {
       const fresh = Store.newNote('새 노트');
       state.notes.push(fresh);
@@ -286,6 +315,64 @@
   $('#sel-duplicate').addEventListener('click', () => engine.duplicateSelection());
   $('#sel-close').addEventListener('click', () => engine.clearSelection());
   $('#sel-recognize').addEventListener('click', () => runRecognition(engine.selectedStrokes()));
+
+  /* ============== 이미지 삽입 ============== */
+  $('#btn-image').addEventListener('click', () => $('#image-file').click());
+  $('#image-file').addEventListener('change', e => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (file) insertImageFile(file);
+  });
+
+  // 클립보드 이미지 붙여넣기 (Ctrl+V / iPad 붙여넣기 메뉴)
+  document.addEventListener('paste', e => {
+    if (engine.readonly) return;
+    for (const item of e.clipboardData.items) {
+      if (item.type.startsWith('image/')) {
+        e.preventDefault();
+        insertImageFile(item.getAsFile());
+        return;
+      }
+    }
+  });
+
+  async function insertImageFile(file) {
+    if (!file || !file.type.startsWith('image/')) return;
+    try {
+      const dataUrl = await downscaleImage(file, 1600);
+      const probe = new Image();
+      probe.onload = () => {
+        setTool('lasso'); // 삽입 직후 바로 드래그로 옮길 수 있게
+        engine.addImage(dataUrl, probe.naturalWidth, probe.naturalHeight);
+        toast('이미지를 드래그해 옮기고, 액션 바에서 삭제할 수 있습니다');
+      };
+      probe.onerror = () => toast('이미지를 읽지 못했습니다');
+      probe.src = dataUrl;
+    } catch (err) {
+      toast('이미지 삽입 실패: ' + err.message);
+    }
+  }
+
+  /** 저장 용량을 위해 긴 변 기준으로 축소 (PNG는 투명도 보존, 나머지는 JPEG) */
+  function downscaleImage(file, maxDim) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        const k = Math.min(1, maxDim / Math.max(img.naturalWidth, img.naturalHeight));
+        const c = document.createElement('canvas');
+        c.width = Math.max(1, Math.round(img.naturalWidth * k));
+        c.height = Math.max(1, Math.round(img.naturalHeight * k));
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        resolve(file.type === 'image/png'
+          ? c.toDataURL('image/png')
+          : c.toDataURL('image/jpeg', 0.85));
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('이미지 로드 실패')); };
+      img.src = url;
+    });
+  }
 
   /* ============== 필기 인식 ============== */
   $('#btn-recognize').addEventListener('click', () => {
@@ -476,6 +563,7 @@
   $('#note-title').value = note.title;
   updateUndoButtons();
   if (params.get('readonly') === '1') setReadonly(true);
+  if (!EMBED && Store.remote.enabled()) syncFromServer();
 
   if (EMBED) {
     Bridge.init({
