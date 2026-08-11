@@ -1,9 +1,10 @@
 /* 간단한 오프라인 캐시 서비스 워커 */
-const CACHE = 'handdrawing-v2';
+const CACHE = 'handdrawing-v3';
 const ASSETS = [
   '.',
   'index.html',
   'styles.css',
+  'config.js',
   'js/store.js',
   'js/engine.js',
   'js/pdf.js',
@@ -11,6 +12,7 @@ const ASSETS = [
   'js/app.js',
   'manifest.webmanifest',
   'icon.svg',
+  'apple-touch-icon.png',
 ];
 
 self.addEventListener('install', e => {

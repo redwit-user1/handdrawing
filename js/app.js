@@ -52,6 +52,8 @@
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') saveNow();
   });
+  // iOS Safari는 beforeunload가 불안정 → pagehide가 신뢰할 수 있는 마지막 저장 시점
+  window.addEventListener('pagehide', saveNow);
   window.addEventListener('beforeunload', saveNow);
 
   /* ============== 노트 전환 ============== */
@@ -151,6 +153,45 @@
     $('#note-title').select();
   });
 
+  /* ============== 백업 / 복원 ============== */
+  $('#btn-backup').addEventListener('click', () => {
+    saveNow();
+    const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const blob = new Blob([JSON.stringify(state, null, 1)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.download = `손글씨노트-백업-${stamp}.json`;
+    a.href = URL.createObjectURL(blob);
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    toast(`노트 ${state.notes.length}개를 백업했습니다`);
+  });
+
+  $('#btn-restore').addEventListener('click', () => $('#restore-file').click());
+  $('#restore-file').addEventListener('change', async e => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const data = JSON.parse(await file.text());
+      if (!data || !Array.isArray(data.notes)) throw new Error('형식이 올바르지 않습니다');
+      const existing = new Set(state.notes.map(n => n.id));
+      let added = 0;
+      for (const n of data.notes) {
+        if (!n || !Array.isArray(n.strokes)) continue;
+        // 같은 id가 이미 있으면 새 id로 추가 (중복 유입 방지 대신 병합 우선)
+        if (existing.has(n.id)) n.id = Store.uid();
+        state.notes.push(n);
+        added++;
+      }
+      if (added === 0) throw new Error('가져올 노트가 없습니다');
+      Store.save(state);
+      renderNotesList();
+      toast(`노트 ${added}개를 복원했습니다`);
+    } catch (err) {
+      toast('복원 실패: ' + err.message);
+    }
+  });
+
   /* ============== 제목 ============== */
   $('#note-title').addEventListener('input', () => {
     const note = currentNote();
@@ -246,14 +287,17 @@
       return;
     }
     if (!Recognizer.isSupported()) {
-      toast('이 브라우저는 필기 인식을 지원하지 않습니다 (Chrome/ChromeOS 권장)');
+      toast('필기 인식을 사용할 수 없습니다 — Chrome 계열 브라우저를 쓰거나 config.js에 인식 서버를 설정하세요');
       return;
     }
     toast('필기 인식 중…');
     try {
       const text = await Recognizer.recognize(strokes);
       $('#recog-text').value = text || '';
-      $('#recog-dialog').showModal();
+      const dlg = $('#recog-dialog');
+      // Safari 15.4 미만 등 <dialog> 미지원 브라우저 폴백
+      if (typeof dlg.showModal === 'function') dlg.showModal();
+      else dlg.setAttribute('open', '');
     } catch (e) {
       toast('필기 인식 실패: ' + e.message);
     }
@@ -269,7 +313,11 @@
       toast('클립보드에 복사했습니다');
     }
   });
-  $('#recog-close').addEventListener('click', () => $('#recog-dialog').close());
+  $('#recog-close').addEventListener('click', () => {
+    const dlg = $('#recog-dialog');
+    if (typeof dlg.close === 'function') dlg.close();
+    else dlg.removeAttribute('open');
+  });
 
   /* ============== 색상 ============== */
   const colorGroup = $('#color-group');

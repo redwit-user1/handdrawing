@@ -7,8 +7,10 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#1a1c20">
 <title>손글씨 노트</title>
+<meta name="apple-mobile-web-app-title" content="손글씨">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -105,6 +107,11 @@
       </button>
     </div>
     <ul id="notes-list"></ul>
+    <div class="panel-foot">
+      <button id="btn-backup" class="foot-btn" title="모든 노트를 JSON 파일로 저장">전체 백업</button>
+      <button id="btn-restore" class="foot-btn" title="백업 파일에서 노트 가져오기">복원</button>
+      <input id="restore-file" type="file" accept=".json,application/json" hidden>
+    </div>
   </aside>
 
   <!-- 도형 선택 팝오버 -->
@@ -150,6 +157,7 @@
   <div id="toast" hidden></div>
 </div>
 
+<script src="config.js"></script>
 <script src="js/store.js"></script>
 <script src="js/engine.js"></script>
 <script src="js/pdf.js"></script>

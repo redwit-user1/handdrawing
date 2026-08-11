@@ -1,25 +1,34 @@
 /**
  * recognize.js — 필기 텍스트 인식.
- * 브라우저 내장 Handwriting Recognition API(Chrome/ChromeOS 등)를 사용한다.
- * 외부 서버로 데이터를 보내지 않고 온디바이스로 처리되며,
- * 미지원 브라우저에서는 null을 반환해 앱이 안내 메시지를 띄운다.
+ *
+ * 폴백 체인:
+ *  1. 브라우저 내장 Handwriting Recognition API (Chrome/ChromeOS — 온디바이스 처리)
+ *  2. config.js의 recognizerEndpoint로 지정한 자체 호스팅 인식 서버
+ *     (iPad Safari 등 내장 API가 없는 브라우저와 온프레미스 환경용)
+ *  3. 둘 다 없으면 null 반환 → 앱이 안내 메시지를 띄움
  */
 const Recognizer = (() => {
-  function isSupported() {
+  function hasNativeAPI() {
     return typeof navigator.createHandwritingRecognizer === 'function' &&
       typeof window.HandwritingStroke === 'function';
   }
 
-  /**
-   * strokes: 엔진의 획 배열 (도형은 제외하고 자유 곡선만 사용)
-   * 반환: 인식된 문자열 (실패/미지원 시 null)
-   */
-  async function recognize(strokes) {
-    if (!isSupported()) return null;
+  function endpoint() {
+    return (window.APP_CONFIG && window.APP_CONFIG.recognizerEndpoint) || null;
+  }
 
-    const inkStrokes = strokes.filter(s => s.tool !== 'shape' && s.points.length > 0);
-    if (inkStrokes.length === 0) return '';
+  function isSupported() {
+    return hasNativeAPI() || !!endpoint();
+  }
 
+  /** 어떤 경로로 인식되는지 안내용 라벨 */
+  function backendName() {
+    if (hasNativeAPI()) return 'browser';
+    if (endpoint()) return 'server';
+    return null;
+  }
+
+  async function recognizeNative(inkStrokes) {
     const recognizer = await navigator.createHandwritingRecognizer({
       languages: ['ko', 'en'],
     });
@@ -45,5 +54,33 @@ const Recognizer = (() => {
     }
   }
 
-  return { isSupported, recognize };
+  async function recognizeRemote(inkStrokes) {
+    const res = await fetch(endpoint(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        languages: ['ko', 'en'],
+        strokes: inkStrokes.map(s => ({
+          points: s.points.map(p => [p[0], p[1]]),
+        })),
+      }),
+    });
+    if (!res.ok) throw new Error('인식 서버 오류 (HTTP ' + res.status + ')');
+    const data = await res.json();
+    return typeof data.text === 'string' ? data.text : '';
+  }
+
+  /**
+   * strokes: 엔진의 획 배열 (도형은 제외하고 자유 곡선만 사용)
+   * 반환: 인식된 문자열 (미지원 시 null)
+   */
+  async function recognize(strokes) {
+    const inkStrokes = strokes.filter(s => s.tool !== 'shape' && s.points.length > 0);
+    if (inkStrokes.length === 0) return '';
+    if (hasNativeAPI()) return recognizeNative(inkStrokes);
+    if (endpoint()) return recognizeRemote(inkStrokes);
+    return null;
+  }
+
+  return { isSupported, backendName, recognize };
 })();
