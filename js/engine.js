@@ -6,7 +6,8 @@
  * - 손가락 두 개: 핀치 줌 + 패닝 / (손가락 그리기 꺼짐 시) 손가락 하나: 패닝
  * - getCoalescedEvents로 고주파 입력 샘플 수집 → 부드러운 곡선
  * - 완료된 획은 오프스크린 캔버스에 캐시하여 그리는 동안 60fps 유지
- * - 실행 취소 / 다시 실행 (획 추가·삭제·전체 지우기)
+ * - 도형(직선/화살표/사각형/타원), 올가미 선택(이동·복제·삭제)
+ * - 실행 취소 / 다시 실행 (추가·삭제·이동·전체 지우기)
  */
 class DrawingEngine {
   constructor(canvas, opts = {}) {
@@ -14,7 +15,7 @@ class DrawingEngine {
     this.ctx = canvas.getContext('2d');
     this.bg = document.createElement('canvas');       // 완료된 획 캐시
     this.bgCtx = this.bg.getContext('2d');
-    this.opts = opts;                                  // { onChange, onViewport, onPenDetected }
+    this.opts = opts;   // { onChange, onViewport, onPenDetected, onSelection }
 
     // 뷰포트: screen = world * scale + (tx, ty)
     this.scale = 1;
@@ -24,7 +25,8 @@ class DrawingEngine {
     this.maxScale = 8;
 
     // 도구 상태
-    this.tool = 'pen';            // pen | highlighter | eraser | pan
+    this.tool = 'pen';            // pen | highlighter | eraser | pan | shape | lasso
+    this.shape = 'line';          // line | arrow | rect | ellipse
     this.color = '#1f2328';
     this.size = 5;                // 월드 좌표 기준 기본 굵기
     this.touchDraws = true;       // 손가락으로 그리기 허용 여부
@@ -38,11 +40,15 @@ class DrawingEngine {
 
     // 입력 상태
     this.pointers = new Map();    // pointerId -> {x, y, type}
-    this.drawing = null;          // 진행 중인 획 {stroke, lastX, lastY, pointerId, erasing}
+    this.drawing = null;          // 진행 중인 입력 상태
     this.gesture = null;          // 핀치/패닝 상태
     this.penLastSeen = 0;         // 팜 리젝션용: 마지막 펜 이벤트 시각
     this.eraserPos = null;        // 지우개 커서 표시용 (화면 좌표)
     this.erasedInDrag = [];       // 드래그 한 번 동안 지운 획 모음 (undo 단위)
+
+    // 선택 상태
+    this.selection = null;        // { strokes: Set, bbox: {minX,minY,maxX,maxY} }
+    this.lassoPath = null;        // 진행 중인 올가미 경로 (월드 좌표)
 
     this._dirty = true;
     this._bgDirty = true;
@@ -63,6 +69,7 @@ class DrawingEngine {
     this.undoStack = [];
     this.redoStack = [];
     this._cancelInput();
+    this.clearSelection();
     this.requestRender(true);
     this._emitChange(false);
   }
@@ -96,6 +103,7 @@ class DrawingEngine {
   undo() {
     const op = this.undoStack.pop();
     if (!op) return;
+    this.clearSelection();
     this._applyInverse(op);
     this.redoStack.push(op);
     this.requestRender(true);
@@ -105,6 +113,7 @@ class DrawingEngine {
   redo() {
     const op = this.redoStack.pop();
     if (!op) return;
+    this.clearSelection();
     this._applyForward(op);
     this.undoStack.push(op);
     this.requestRender(true);
@@ -114,9 +123,13 @@ class DrawingEngine {
   _applyForward(op) {
     if (op.type === 'add') {
       this.strokes.push(op.stroke);
+    } else if (op.type === 'add-multi') {
+      this.strokes.push(...op.strokes);
     } else if (op.type === 'remove') {
       const ids = new Set(op.entries.map(e => e.stroke));
       this.strokes = this.strokes.filter(s => !ids.has(s));
+    } else if (op.type === 'move') {
+      for (const s of op.strokes) translateStroke(s, op.dx, op.dy);
     } else if (op.type === 'clear') {
       this.strokes = [];
     }
@@ -126,6 +139,9 @@ class DrawingEngine {
     if (op.type === 'add') {
       const i = this.strokes.lastIndexOf(op.stroke);
       if (i >= 0) this.strokes.splice(i, 1);
+    } else if (op.type === 'add-multi') {
+      const ids = new Set(op.strokes);
+      this.strokes = this.strokes.filter(s => !ids.has(s));
     } else if (op.type === 'remove') {
       // 원래 위치(index)에 정렬 삽입하여 겹침 순서 유지
       const entries = [...op.entries].sort((a, b) => a.index - b.index);
@@ -133,6 +149,8 @@ class DrawingEngine {
         const i = Math.min(e.index, this.strokes.length);
         this.strokes.splice(i, 0, e.stroke);
       }
+    } else if (op.type === 'move') {
+      for (const s of op.strokes) translateStroke(s, -op.dx, -op.dy);
     } else if (op.type === 'clear') {
       this.strokes = op.strokes.slice();
     }
@@ -140,10 +158,86 @@ class DrawingEngine {
 
   clearAll() {
     if (this.strokes.length === 0) return;
+    this.clearSelection();
     this._pushUndo({ type: 'clear', strokes: this.strokes.slice() });
     this.strokes = [];
     this.requestRender(true);
     this._emitChange(true);
+  }
+
+  /* ============== 선택 (올가미) ============== */
+  clearSelection() {
+    if (!this.selection) return;
+    this.selection = null;
+    this.requestRender();
+    this._emitSelection();
+  }
+
+  _setSelection(strokes) {
+    if (!strokes || strokes.length === 0) {
+      this.clearSelection();
+      return;
+    }
+    this.selection = { strokes: new Set(strokes), bbox: this._bboxOf(strokes) };
+    this.requestRender();
+    this._emitSelection();
+  }
+
+  _bboxOf(strokes) {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const s of strokes) {
+      const half = (s.size || 0) / 2 + 2;
+      for (const [x, y] of strokeSamplePoints(s)) {
+        if (x - half < minX) minX = x - half;
+        if (y - half < minY) minY = y - half;
+        if (x + half > maxX) maxX = x + half;
+        if (y + half > maxY) maxY = y + half;
+      }
+    }
+    return { minX, minY, maxX, maxY };
+  }
+
+  selectedStrokes() {
+    return this.selection ? [...this.selection.strokes] : [];
+  }
+
+  deleteSelection() {
+    if (!this.selection) return;
+    const entries = [];
+    for (let i = 0; i < this.strokes.length; i++) {
+      if (this.selection.strokes.has(this.strokes[i])) {
+        entries.push({ stroke: this.strokes[i], index: i });
+      }
+    }
+    if (entries.length === 0) return;
+    const ids = new Set(entries.map(e => e.stroke));
+    this.strokes = this.strokes.filter(s => !ids.has(s));
+    this._pushUndo({ type: 'remove', entries });
+    this.clearSelection();
+    this.requestRender(true);
+    this._emitChange(true);
+  }
+
+  duplicateSelection() {
+    if (!this.selection) return;
+    const offset = 24;
+    const clones = this.selectedStrokes().map(s => {
+      const c = JSON.parse(JSON.stringify(s));
+      translateStroke(c, offset, offset);
+      return c;
+    });
+    this.strokes.push(...clones);
+    this._pushUndo({ type: 'add-multi', strokes: clones });
+    this._setSelection(clones);
+    this.requestRender(true);
+    this._emitChange(true);
+  }
+
+  _selectionContains(wx, wy) {
+    if (!this.selection) return false;
+    const m = 10 / this.scale; // 여유
+    const b = this.selection.bbox;
+    return wx >= b.minX - m && wx <= b.maxX + m && wy >= b.minY - m && wy <= b.maxY + m;
   }
 
   /* ============== 이벤트 바인딩 ============== */
@@ -215,6 +309,27 @@ class DrawingEngine {
       return;
     }
 
+    const w = this.screenToWorld(x, y);
+
+    // 올가미 도구: 선택 영역 안이면 이동, 밖이면 새 올가미
+    if (this.tool === 'lasso') {
+      if (this.selection && this._selectionContains(w.x, w.y)) {
+        this.drawing = {
+          selMove: true, pointerId: e.pointerId, pointerType: e.pointerType,
+          lastWX: w.x, lastWY: w.y, totalDx: 0, totalDy: 0,
+        };
+        return;
+      }
+      this.clearSelection();
+      this.lassoPath = [[w.x, w.y]];
+      this.drawing = { lasso: true, pointerId: e.pointerId, pointerType: e.pointerType };
+      this.requestRender();
+      return;
+    }
+
+    // 다른 도구를 쓰기 시작하면 선택 해제
+    this.clearSelection();
+
     const erasing = this.tool === 'eraser' || this._isPenEraser(e);
     if (erasing) {
       this.erasedInDrag = [];
@@ -225,8 +340,20 @@ class DrawingEngine {
       return;
     }
 
-    // 그리기 시작
-    const w = this.screenToWorld(x, y);
+    // 도형 그리기 시작
+    if (this.tool === 'shape') {
+      this.drawing = {
+        shapeDraw: true, pointerId: e.pointerId, pointerType: e.pointerType,
+        stroke: {
+          tool: 'shape', shape: this.shape, color: this.color, size: this.size,
+          points: [[round2(w.x), round2(w.y)], [round2(w.x), round2(w.y)]],
+        },
+      };
+      this.requestRender();
+      return;
+    }
+
+    // 자유 곡선 그리기 시작
     const stroke = {
       tool: this.tool === 'highlighter' ? 'highlighter' : 'pen',
       color: this.color,
@@ -237,7 +364,6 @@ class DrawingEngine {
       stroke,
       pointerId: e.pointerId,
       pointerType: e.pointerType,
-      startedAt: performance.now(),
       lastSX: x, lastSY: y,
       smoothP: this._pressure(e),
     };
@@ -271,6 +397,7 @@ class DrawingEngine {
 
     const d = this.drawing;
     if (!d || d.pointerId !== e.pointerId) return;
+    const w = this.screenToWorld(x, y);
 
     if (d.erasing) {
       this._eraseAt(x, y);
@@ -279,7 +406,35 @@ class DrawingEngine {
       return;
     }
 
-    // 고주파 샘플까지 모두 사용해 곡선을 매끄럽게 (빈 배열이면 원본 이벤트 사용)
+    if (d.shapeDraw) {
+      d.stroke.points[1] = [round2(w.x), round2(w.y)];
+      this.requestRender();
+      return;
+    }
+
+    if (d.lasso) {
+      const last = this.lassoPath[this.lassoPath.length - 1];
+      const dx = w.x - last[0], dy = w.y - last[1];
+      const min = 2 / this.scale;
+      if (dx * dx + dy * dy > min * min) this.lassoPath.push([w.x, w.y]);
+      this.requestRender();
+      return;
+    }
+
+    if (d.selMove) {
+      const dx = w.x - d.lastWX, dy = w.y - d.lastWY;
+      if (dx === 0 && dy === 0) return;
+      d.lastWX = w.x; d.lastWY = w.y;
+      d.totalDx += dx; d.totalDy += dy;
+      for (const s of this.selection.strokes) translateStroke(s, dx, dy);
+      const b = this.selection.bbox;
+      b.minX += dx; b.maxX += dx; b.minY += dy; b.maxY += dy;
+      this.requestRender(true);
+      this._emitSelection();
+      return;
+    }
+
+    // 자유 곡선: 고주파 샘플까지 모두 사용해 부드럽게 (빈 배열이면 원본 이벤트 사용)
     const coalesced = e.getCoalescedEvents ? e.getCoalescedEvents() : null;
     const events = coalesced && coalesced.length ? coalesced : [e];
     for (const ev of events) {
@@ -289,8 +444,8 @@ class DrawingEngine {
       d.lastSX = p.x; d.lastSY = p.y;
       // 필압은 EMA로 완만하게
       d.smoothP = d.smoothP * 0.6 + this._pressure(ev) * 0.4;
-      const w = this.screenToWorld(p.x, p.y);
-      d.stroke.points.push([round2(w.x), round2(w.y), round2(d.smoothP)]);
+      const wp = this.screenToWorld(p.x, p.y);
+      d.stroke.points.push([round2(wp.x), round2(wp.y), round2(d.smoothP)]);
     }
     this.requestRender();
   }
@@ -324,6 +479,43 @@ class DrawingEngine {
       return;
     }
 
+    if (d.shapeDraw) {
+      const [[x0, y0], [x1, y1]] = d.stroke.points;
+      this.drawing = null;
+      // 크기가 너무 작으면 무시 (탭 실수)
+      if (Math.hypot(x1 - x0, y1 - y0) * this.scale > 4) {
+        this.strokes.push(d.stroke);
+        this._pushUndo({ type: 'add', stroke: d.stroke });
+        this._emitChange(true);
+      }
+      this.requestRender(true);
+      return;
+    }
+
+    if (d.lasso) {
+      const path = this.lassoPath;
+      this.lassoPath = null;
+      this.drawing = null;
+      if (path && path.length >= 3) {
+        this._setSelection(this._strokesInPolygon(path));
+      }
+      this.requestRender();
+      return;
+    }
+
+    if (d.selMove) {
+      this.drawing = null;
+      if (d.totalDx !== 0 || d.totalDy !== 0) {
+        this._pushUndo({
+          type: 'move', strokes: this.selectedStrokes(),
+          dx: d.totalDx, dy: d.totalDy,
+        });
+        this._emitChange(true);
+      }
+      this.requestRender(true);
+      return;
+    }
+
     // 탭 한 번 → 점 하나 찍기 허용
     this.strokes.push(d.stroke);
     this._pushUndo({ type: 'add', stroke: d.stroke });
@@ -334,6 +526,7 @@ class DrawingEngine {
 
   _cancelStroke() {
     this.drawing = null;
+    this.lassoPath = null;
     this.requestRender();
   }
 
@@ -342,6 +535,20 @@ class DrawingEngine {
     this.gesture = null;
     this.pointers.clear();
     this.eraserPos = null;
+    this.lassoPath = null;
+  }
+
+  _strokesInPolygon(polygon) {
+    const result = [];
+    for (const s of this.strokes) {
+      const pts = strokeSamplePoints(s);
+      let inside = 0;
+      for (const [x, y] of pts) {
+        if (pointInPolygon(x, y, polygon)) inside++;
+      }
+      if (inside >= Math.max(1, pts.length * 0.55)) result.push(s);
+    }
+    return result;
   }
 
   /* ============== 제스처 (핀치 줌 / 패닝) ============== */
@@ -425,8 +632,9 @@ class DrawingEngine {
   }
 
   _strokeHit(stroke, x, y, r) {
-    const pts = stroke.points;
     const r2 = r * r;
+    // 도형은 외곽선 샘플 선분과의 거리로 판정
+    const pts = stroke.tool === 'shape' ? shapeOutline(stroke) : stroke.points;
     if (pts.length === 1) {
       const dx = pts[0][0] - x, dy = pts[0][1] - y;
       return dx * dx + dy * dy <= r2;
@@ -484,11 +692,40 @@ class DrawingEngine {
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
     ctx.drawImage(this.bg, 0, 0);
 
-    // 진행 중인 획
+    // 진행 중인 획 / 도형 미리보기
     const d = this.drawing;
     if (d && d.stroke) {
       this._applyTransform(ctx);
       this._drawStroke(ctx, d.stroke);
+    }
+
+    // 올가미 미리보기
+    if (this.lassoPath && this.lassoPath.length > 1) {
+      this._applyTransform(ctx);
+      ctx.beginPath();
+      ctx.moveTo(this.lassoPath[0][0], this.lassoPath[0][1]);
+      for (const [x, y] of this.lassoPath) ctx.lineTo(x, y);
+      ctx.setLineDash([6 / this.scale, 5 / this.scale]);
+      ctx.lineWidth = 1.5 / this.scale;
+      ctx.strokeStyle = '#2563eb';
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // 선택 표시: 반투명 강조 + 점선 테두리
+    if (this.selection) {
+      this._applyTransform(ctx);
+      ctx.globalAlpha = 0.25;
+      for (const s of this.selection.strokes) {
+        this._drawStroke(ctx, s, { color: '#2563eb', widthBoost: 5 });
+      }
+      ctx.globalAlpha = 1;
+      const b = this.selection.bbox;
+      ctx.setLineDash([7 / this.scale, 5 / this.scale]);
+      ctx.lineWidth = 1.5 / this.scale;
+      ctx.strokeStyle = '#2563eb';
+      ctx.strokeRect(b.minX, b.minY, b.maxX - b.minX, b.maxY - b.minY);
+      ctx.setLineDash([]);
     }
 
     // 지우개 커서
@@ -535,21 +772,28 @@ class DrawingEngine {
     }
   }
 
-  _drawStroke(ctx, stroke) {
+  _drawStroke(ctx, stroke, override) {
     const pts = stroke.points;
     if (pts.length === 0) return;
 
-    ctx.strokeStyle = stroke.color;
-    ctx.fillStyle = stroke.color;
+    const color = override && override.color ? override.color : stroke.color;
+    const boost = override && override.widthBoost ? override.widthBoost : 0;
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
 
+    if (stroke.tool === 'shape') {
+      this._drawShape(ctx, stroke, boost);
+      return;
+    }
+
     if (stroke.tool === 'highlighter') {
-      ctx.globalAlpha = 0.32;
-      ctx.lineWidth = stroke.size;
+      if (!override) ctx.globalAlpha = 0.32;
+      ctx.lineWidth = stroke.size + boost;
       if (pts.length === 1) {
         ctx.beginPath();
-        ctx.arc(pts[0][0], pts[0][1], stroke.size / 2, 0, Math.PI * 2);
+        ctx.arc(pts[0][0], pts[0][1], (stroke.size + boost) / 2, 0, Math.PI * 2);
         ctx.fill();
       } else {
         // 형광펜은 굵기 일정 → 한 패스로 그려 겹침 얼룩 방지
@@ -564,12 +808,12 @@ class DrawingEngine {
         ctx.lineTo(last[0], last[1]);
         ctx.stroke();
       }
-      ctx.globalAlpha = 1;
+      if (!override) ctx.globalAlpha = 1;
       return;
     }
 
     // 펜: 필압에 따라 굵기가 변함 → 구간별로 굵기를 바꿔 그림
-    const widthAt = p => stroke.size * (0.35 + 1.1 * p);
+    const widthAt = p => stroke.size * (0.35 + 1.1 * p) + boost;
 
     if (pts.length === 1) {
       ctx.beginPath();
@@ -592,14 +836,45 @@ class DrawingEngine {
     }
   }
 
-  /* ============== PNG 내보내기 ============== */
-  exportPNG(title) {
+  _drawShape(ctx, stroke, boost = 0) {
+    const [[x0, y0], [x1, y1]] = stroke.points;
+    ctx.lineWidth = stroke.size + boost;
+    ctx.beginPath();
+    switch (stroke.shape) {
+      case 'rect':
+        ctx.rect(Math.min(x0, x1), Math.min(y0, y1), Math.abs(x1 - x0), Math.abs(y1 - y0));
+        break;
+      case 'ellipse':
+        ctx.ellipse((x0 + x1) / 2, (y0 + y1) / 2,
+          Math.abs(x1 - x0) / 2, Math.abs(y1 - y0) / 2, 0, 0, Math.PI * 2);
+        break;
+      case 'arrow': {
+        ctx.moveTo(x0, y0);
+        ctx.lineTo(x1, y1);
+        const angle = Math.atan2(y1 - y0, x1 - x0);
+        const len = Math.max(10, stroke.size * 3.5);
+        for (const da of [Math.PI * 5 / 6, -Math.PI * 5 / 6]) {
+          ctx.moveTo(x1, y1);
+          ctx.lineTo(x1 + Math.cos(angle + da) * len, y1 + Math.sin(angle + da) * len);
+        }
+        break;
+      }
+      default: // line
+        ctx.moveTo(x0, y0);
+        ctx.lineTo(x1, y1);
+    }
+    ctx.stroke();
+  }
+
+  /* ============== 내보내기 ============== */
+
+  /** 콘텐츠 경계를 계산해 흰 배경의 캔버스로 렌더링 (없으면 null) */
+  renderExportCanvas() {
     if (this.strokes.length === 0) return null;
-    // 콘텐츠 경계 계산
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const s of this.strokes) {
       const half = s.size; // 굵기 여유
-      for (const [x, y] of s.points) {
+      for (const [x, y] of strokeSamplePoints(s)) {
         if (x - half < minX) minX = x - half;
         if (y - half < minY) minY = y - half;
         if (x + half > maxX) maxX = x + half;
@@ -619,7 +894,12 @@ class DrawingEngine {
     octx.fillRect(0, 0, out.width, out.height);
     octx.setTransform(exportScale, 0, 0, exportScale, -minX * exportScale, -minY * exportScale);
     for (const s of this.strokes) this._drawStroke(octx, s);
+    return out;
+  }
 
+  exportPNG(title) {
+    const out = this.renderExportCanvas();
+    if (!out) return false;
     const a = document.createElement('a');
     a.download = (title || '노트') + '.png';
     a.href = out.toDataURL('image/png');
@@ -634,7 +914,12 @@ class DrawingEngine {
   _emitViewport() {
     if (this.opts.onViewport) this.opts.onViewport(this.scale);
   }
+  _emitSelection() {
+    if (this.opts.onSelection) this.opts.onSelection(this.selection);
+  }
 }
+
+/* ============== 유틸 ============== */
 
 /* 점-선분 거리 제곱 */
 function distToSegmentSq(px, py, x1, y1, x2, y2) {
@@ -648,3 +933,61 @@ function distToSegmentSq(px, py, x1, y1, x2, y2) {
 }
 
 function round2(n) { return Math.round(n * 100) / 100; }
+
+/* 획을 (dx, dy)만큼 평행 이동 */
+function translateStroke(stroke, dx, dy) {
+  for (const p of stroke.points) {
+    p[0] = round2(p[0] + dx);
+    p[1] = round2(p[1] + dy);
+  }
+}
+
+/* 도형의 외곽선 샘플 점 (히트 테스트 / 선택 판정용) */
+function shapeOutline(stroke) {
+  const [[x0, y0], [x1, y1]] = stroke.points;
+  switch (stroke.shape) {
+    case 'rect':
+      return [[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]];
+    case 'ellipse': {
+      const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+      const rx = Math.abs(x1 - x0) / 2, ry = Math.abs(y1 - y0) / 2;
+      const out = [];
+      for (let i = 0; i <= 24; i++) {
+        const a = (i / 24) * Math.PI * 2;
+        out.push([cx + Math.cos(a) * rx, cy + Math.sin(a) * ry]);
+      }
+      return out;
+    }
+    default: // line, arrow
+      return [[x0, y0], [x1, y1]];
+  }
+}
+
+/* 선택 판정용 샘플 점: 자유 곡선은 자체 점, 도형은 외곽선 샘플 */
+function strokeSamplePoints(stroke) {
+  if (stroke.tool === 'shape') {
+    const out = shapeOutline(stroke);
+    // 선분 중점도 포함해 판정 정확도 향상
+    const withMids = [];
+    for (let i = 0; i < out.length; i++) {
+      withMids.push(out[i]);
+      if (i + 1 < out.length) {
+        withMids.push([(out[i][0] + out[i + 1][0]) / 2, (out[i][1] + out[i + 1][1]) / 2]);
+      }
+    }
+    return withMids;
+  }
+  return stroke.points;
+}
+
+/* 점이 다각형 내부인지 (ray casting) */
+function pointInPolygon(x, y, polygon) {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const [xi, yi] = polygon[i], [xj, yj] = polygon[j];
+    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}

@@ -43,8 +43,17 @@
       <button class="tb-btn tool" data-tool="eraser" title="지우개" aria-pressed="false">
         <svg viewBox="0 0 24 24"><path d="m7 21-4-4a2 2 0 0 1 0-3L14 3a2 2 0 0 1 3 0l4 4a2 2 0 0 1 0 3L11 21Z" stroke-linejoin="round"/><path d="M7 21h14" stroke-linecap="round"/></svg>
       </button>
+      <button class="tb-btn tool" id="btn-shape" data-tool="shape" title="도형" aria-pressed="false">
+        <svg viewBox="0 0 24 24"><rect x="3" y="4" width="9" height="9" rx="1"/><circle cx="16" cy="16" r="5"/></svg>
+      </button>
+      <button class="tb-btn tool" data-tool="lasso" title="올가미 선택" aria-pressed="false">
+        <svg viewBox="0 0 24 24"><path d="M12 4c4.4 0 8 2 8 5s-3.6 5-8 5c-1 0-2-.1-2.9-.3M4.6 11.3C4.2 10.6 4 9.8 4 9c0-3 3.6-5 8-5" stroke-linecap="round" stroke-dasharray="3 2.4"/><path d="M7 13a2 2 0 1 0 0 4c1.5 0 2-1.5 2-3s.5-3 2-3" stroke-linecap="round"/></svg>
+      </button>
       <button class="tb-btn tool" data-tool="pan" title="이동" aria-pressed="false">
         <svg viewBox="0 0 24 24"><path d="M18 11V6.5a1.5 1.5 0 0 0-3 0m3 4.5v-2a1.5 1.5 0 0 1 3 0V14a7 7 0 0 1-7 7h-1c-2.5 0-4-1-5.5-3L4 13.5a1.6 1.6 0 0 1 2.5-2L8 13V5a1.5 1.5 0 0 1 3 0m0 6V4a1.5 1.5 0 0 1 3 0v7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button class="tb-btn" id="btn-recognize" title="필기를 텍스트로 인식">
+        <svg viewBox="0 0 24 24"><path d="M5 19 11 5l6 14M7.5 14h7" stroke-linecap="round" stroke-linejoin="round"/><path d="M19 4v4M17 6h4" stroke-linecap="round"/></svg>
       </button>
     </div>
 
@@ -72,7 +81,7 @@
     </div>
 
     <div class="tb-group">
-      <button id="btn-export" class="tb-btn" title="PNG로 내보내기">
+      <button id="btn-export" class="tb-btn" title="내보내기 (PNG / PDF)">
         <svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" stroke-linecap="round"/></svg>
       </button>
       <button id="btn-clear" class="tb-btn danger" title="전체 지우기">
@@ -98,11 +107,53 @@
     <ul id="notes-list"></ul>
   </aside>
 
+  <!-- 도형 선택 팝오버 -->
+  <div id="shape-popover" class="popover" hidden>
+    <button class="tb-btn" data-shape="line" title="직선">
+      <svg viewBox="0 0 24 24"><path d="M4 20 20 4" stroke-linecap="round"/></svg>
+    </button>
+    <button class="tb-btn" data-shape="arrow" title="화살표">
+      <svg viewBox="0 0 24 24"><path d="M4 20 20 4m0 0h-7m7 0v7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <button class="tb-btn" data-shape="rect" title="사각형">
+      <svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="1.5"/></svg>
+    </button>
+    <button class="tb-btn" data-shape="ellipse" title="타원">
+      <svg viewBox="0 0 24 24"><ellipse cx="12" cy="12" rx="8.5" ry="6.5"/></svg>
+    </button>
+  </div>
+
+  <!-- 내보내기 팝오버 -->
+  <div id="export-popover" class="popover" hidden>
+    <button class="popover-item" data-format="png">PNG 이미지</button>
+    <button class="popover-item" data-format="pdf">PDF 문서</button>
+  </div>
+
+  <!-- 선택 액션 바 -->
+  <div id="selection-bar" hidden>
+    <button id="sel-recognize" title="선택한 필기를 텍스트로 인식">가 인식</button>
+    <button id="sel-duplicate" title="복제">복제</button>
+    <button id="sel-delete" title="삭제" class="danger">삭제</button>
+    <button id="sel-close" title="선택 해제">✕</button>
+  </div>
+
+  <!-- 필기 인식 결과 -->
+  <dialog id="recog-dialog">
+    <h3>필기 인식 결과</h3>
+    <textarea id="recog-text" rows="4" placeholder="(인식된 텍스트 없음)"></textarea>
+    <div class="dialog-actions">
+      <button id="recog-copy">복사</button>
+      <button id="recog-close">닫기</button>
+    </div>
+  </dialog>
+
   <div id="toast" hidden></div>
 </div>
 
 <script src="js/store.js"></script>
 <script src="js/engine.js"></script>
+<script src="js/pdf.js"></script>
+<script src="js/recognize.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

@@ -18,11 +18,15 @@
     },
     onViewport(scale) {
       $('#zoom-label').textContent = Math.round(scale * 100) + '%';
+      updateSelectionBar();
     },
     onPenDetected() {
       // 펜이 감지되면 손가락 그리기를 자동으로 꺼서 팜 리젝션 강화
       setTouchDraws(false);
       toast('펜 감지됨 — 손가락은 화면 이동에 사용됩니다');
+    },
+    onSelection() {
+      updateSelectionBar();
     },
   });
 
@@ -161,13 +165,111 @@
   function setTool(tool) {
     engine.tool = tool;
     engine.eraserPos = null;
+    if (tool !== 'lasso') engine.clearSelection();
     $$('#tool-group .tool').forEach(b =>
       b.setAttribute('aria-pressed', String(b.dataset.tool === tool)));
     canvas.classList.toggle('tool-pan', tool === 'pan');
     engine.requestRender();
   }
-  $$('#tool-group .tool').forEach(b =>
-    b.addEventListener('click', () => setTool(b.dataset.tool)));
+  $$('#tool-group .tool').forEach(b => {
+    if (b.dataset.tool === 'shape') return; // 도형 버튼은 팝오버로 처리
+    b.addEventListener('click', () => setTool(b.dataset.tool));
+  });
+
+  /* ============== 팝오버 공통 ============== */
+  function openPopover(popover, anchor) {
+    closePopovers();
+    popover.hidden = false;
+    const r = anchor.getBoundingClientRect();
+    const w = popover.offsetWidth;
+    popover.style.top = (r.bottom + 6) + 'px';
+    popover.style.left = Math.max(8, Math.min(r.left, window.innerWidth - w - 8)) + 'px';
+  }
+  function closePopovers() {
+    $$('.popover').forEach(p => { p.hidden = true; });
+  }
+  document.addEventListener('pointerdown', e => {
+    if (!e.target.closest('.popover') &&
+        !e.target.closest('#btn-shape') &&
+        !e.target.closest('#btn-export')) {
+      closePopovers();
+    }
+  }, true);
+
+  /* ============== 도형 도구 ============== */
+  $('#btn-shape').addEventListener('click', () => {
+    setTool('shape');
+    const pop = $('#shape-popover');
+    if (pop.hidden) openPopover(pop, $('#btn-shape'));
+    else pop.hidden = true;
+    updateShapeButtons();
+  });
+  function updateShapeButtons() {
+    $$('#shape-popover [data-shape]').forEach(b =>
+      b.setAttribute('aria-pressed', String(b.dataset.shape === engine.shape)));
+  }
+  $$('#shape-popover [data-shape]').forEach(b =>
+    b.addEventListener('click', () => {
+      engine.shape = b.dataset.shape;
+      setTool('shape');
+      updateShapeButtons();
+      closePopovers();
+    }));
+
+  /* ============== 선택 액션 바 ============== */
+  function updateSelectionBar() {
+    const bar = $('#selection-bar');
+    const sel = engine.selection;
+    if (!sel) { bar.hidden = true; return; }
+    bar.hidden = false;
+    const canvasRect = canvas.getBoundingClientRect();
+    const cx = ((sel.bbox.minX + sel.bbox.maxX) / 2) * engine.scale + engine.tx + canvasRect.left;
+    const topY = sel.bbox.minY * engine.scale + engine.ty + canvasRect.top;
+    const w = bar.offsetWidth, h = bar.offsetHeight;
+    bar.style.left = Math.max(8, Math.min(cx - w / 2, window.innerWidth - w - 8)) + 'px';
+    bar.style.top = Math.max(canvasRect.top + 8, topY - h - 12) + 'px';
+  }
+  $('#sel-delete').addEventListener('click', () => engine.deleteSelection());
+  $('#sel-duplicate').addEventListener('click', () => engine.duplicateSelection());
+  $('#sel-close').addEventListener('click', () => engine.clearSelection());
+  $('#sel-recognize').addEventListener('click', () => runRecognition(engine.selectedStrokes()));
+
+  /* ============== 필기 인식 ============== */
+  $('#btn-recognize').addEventListener('click', () => {
+    const targets = engine.selection ? engine.selectedStrokes() : engine.strokes;
+    runRecognition(targets);
+  });
+
+  async function runRecognition(strokes) {
+    if (!strokes || strokes.length === 0) {
+      toast('인식할 필기가 없습니다');
+      return;
+    }
+    if (!Recognizer.isSupported()) {
+      toast('이 브라우저는 필기 인식을 지원하지 않습니다 (Chrome/ChromeOS 권장)');
+      return;
+    }
+    toast('필기 인식 중…');
+    try {
+      const text = await Recognizer.recognize(strokes);
+      $('#recog-text').value = text || '';
+      $('#recog-dialog').showModal();
+    } catch (e) {
+      toast('필기 인식 실패: ' + e.message);
+    }
+  }
+
+  $('#recog-copy').addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText($('#recog-text').value);
+      toast('클립보드에 복사했습니다');
+    } catch (_) {
+      $('#recog-text').select();
+      document.execCommand('copy');
+      toast('클립보드에 복사했습니다');
+    }
+  });
+  $('#recog-close').addEventListener('click', () => $('#recog-dialog').close());
 
   /* ============== 색상 ============== */
   const colorGroup = $('#color-group');
@@ -237,9 +339,24 @@
 
   /* ============== 내보내기 / 전체 지우기 ============== */
   $('#btn-export').addEventListener('click', () => {
-    const ok = engine.exportPNG(currentNote().title);
-    toast(ok ? 'PNG로 저장했습니다' : '내보낼 내용이 없습니다');
+    const pop = $('#export-popover');
+    if (pop.hidden) openPopover(pop, $('#btn-export'));
+    else pop.hidden = true;
   });
+  $$('#export-popover [data-format]').forEach(b =>
+    b.addEventListener('click', () => {
+      closePopovers();
+      const title = currentNote().title || '노트';
+      if (b.dataset.format === 'png') {
+        const ok = engine.exportPNG(title);
+        toast(ok ? 'PNG로 저장했습니다' : '내보낼 내용이 없습니다');
+      } else {
+        const out = engine.renderExportCanvas();
+        if (!out) { toast('내보낼 내용이 없습니다'); return; }
+        downloadCanvasAsPDF(out, title + '.pdf');
+        toast('PDF로 저장했습니다');
+      }
+    }));
 
   $('#btn-clear').addEventListener('click', () => {
     if (engine.strokes.length === 0) return;
@@ -257,6 +374,12 @@
     else if (!mod && e.key === 'p') setTool('pen');
     else if (!mod && e.key === 'h') setTool('highlighter');
     else if (!mod && e.key === 'e') setTool('eraser');
+    else if (!mod && e.key === 's') setTool('shape');
+    else if (!mod && e.key === 'l') setTool('lasso');
+    else if ((e.key === 'Delete' || e.key === 'Backspace') && engine.selection) {
+      e.preventDefault(); engine.deleteSelection();
+    }
+    else if (e.key === 'Escape') { engine.clearSelection(); closePopovers(); }
     else if (!mod && e.key === ' ') { e.preventDefault(); setTool('pan'); }
     else if (mod && e.key === '0') { e.preventDefault(); engine.resetView(); }
     else if (mod && (e.key === '=' || e.key === '+')) { e.preventDefault(); engine.zoomBy(1.25); }
