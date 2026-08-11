@@ -399,6 +399,20 @@ body {
   white-space: nowrap;
 }
 
+/* ===== ELN 임베드 / 읽기 전용 모드 ===== */
+/* 임베드: 노트 목록은 호스트(ELN)가 관리하므로 숨김 */
+body.embed #btn-notes { display: none; }
+
+/* 읽기 전용: 편집 UI 전체 숨김 (이동·줌·격자·내보내기·인식만 유지) */
+body.readonly #undo-group,
+body.readonly #tool-group,
+body.readonly #color-group,
+body.readonly #size-group,
+body.readonly #btn-touchdraw,
+body.readonly #btn-clear,
+body.readonly #selection-bar { display: none; }
+body.readonly #board { cursor: grab; }
+
 /* 좁은 화면(세로 태블릿)에서는 툴바 압축 */
 @media (max-width: 740px) {
   #note-title { width: 90px; }

@@ -1,5 +1,5 @@
 /* 간단한 오프라인 캐시 서비스 워커 */
-const CACHE = 'handdrawing-v3';
+const CACHE = 'handdrawing-v4';
 const ASSETS = [
   '.',
   'index.html',
@@ -9,6 +9,7 @@ const ASSETS = [
   'js/engine.js',
   'js/pdf.js',
   'js/recognize.js',
+  'js/bridge.js',
   'js/app.js',
   'manifest.webmanifest',
   'icon.svg',

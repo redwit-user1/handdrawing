@@ -31,6 +31,7 @@ class DrawingEngine {
     this.size = 5;                // 월드 좌표 기준 기본 굵기
     this.touchDraws = true;       // 손가락으로 그리기 허용 여부
     this.showGrid = true;
+    this.readonly = false;        // 읽기 전용(열람) 모드: 이동/줌만 허용
 
     // 데이터
     this.strokes = [];
@@ -101,6 +102,7 @@ class DrawingEngine {
   }
 
   undo() {
+    if (this.readonly) return;
     const op = this.undoStack.pop();
     if (!op) return;
     this.clearSelection();
@@ -111,6 +113,7 @@ class DrawingEngine {
   }
 
   redo() {
+    if (this.readonly) return;
     const op = this.redoStack.pop();
     if (!op) return;
     this.clearSelection();
@@ -157,6 +160,7 @@ class DrawingEngine {
   }
 
   clearAll() {
+    if (this.readonly) return;
     if (this.strokes.length === 0) return;
     this.clearSelection();
     this._pushUndo({ type: 'clear', strokes: this.strokes.slice() });
@@ -202,7 +206,7 @@ class DrawingEngine {
   }
 
   deleteSelection() {
-    if (!this.selection) return;
+    if (this.readonly || !this.selection) return;
     const entries = [];
     for (let i = 0; i < this.strokes.length; i++) {
       if (this.selection.strokes.has(this.strokes[i])) {
@@ -219,7 +223,7 @@ class DrawingEngine {
   }
 
   duplicateSelection() {
-    if (!this.selection) return;
+    if (this.readonly || !this.selection) return;
     const offset = 24;
     const clones = this.selectedStrokes().map(s => {
       const c = JSON.parse(JSON.stringify(s));
@@ -300,6 +304,13 @@ class DrawingEngine {
     }
     if (this.gesture) return;
 
+    // 읽기 전용 모드: 어떤 포인터든 화면 이동만 (핀치 줌은 위에서 처리됨)
+    if (this.readonly) {
+      this.gesture = { mode: 'pan', lastX: x, lastY: y, pointerId: e.pointerId };
+      this.canvas.classList.add('dragging');
+      return;
+    }
+
     const isMiddlePan = e.pointerType === 'mouse' && e.button === 1;
     const touchPans = e.pointerType === 'touch' && !this.touchDraws;
 
@@ -346,6 +357,7 @@ class DrawingEngine {
         shapeDraw: true, pointerId: e.pointerId, pointerType: e.pointerType,
         stroke: {
           tool: 'shape', shape: this.shape, color: this.color, size: this.size,
+          t: Date.now(), // 작성 시각 (연구노트 증적용)
           points: [[round2(w.x), round2(w.y)], [round2(w.x), round2(w.y)]],
         },
       };
@@ -358,6 +370,7 @@ class DrawingEngine {
       tool: this.tool === 'highlighter' ? 'highlighter' : 'pen',
       color: this.color,
       size: this.tool === 'highlighter' ? this.size * 3.2 : this.size,
+      t: Date.now(), // 작성 시각 (연구노트 증적용)
       points: [[round2(w.x), round2(w.y), round2(this._pressure(e))]],
     };
     this.drawing = {

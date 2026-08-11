@@ -19,4 +19,14 @@ window.APP_CONFIG = {
    *     recognizerEndpoint: 'https://ocr.internal.example.com/recognize'
    */
   recognizerEndpoint: null,
+
+  /**
+   * ELN 임베드(postMessage) 허용 오리진 (선택).
+   *
+   * `index.html?embed=1`을 iframe으로 띄우는 호스트(ELN)의 오리진 목록.
+   *  - null: 동일 오리진만 허용 (기본, ELN과 같은 도메인에서 서빙할 때)
+   *  - ['https://eln.example.com']: 지정한 오리진만 허용
+   *  - ['*']: 모든 오리진 허용 (개발용 — 운영에서는 사용하지 말 것)
+   */
+  embedAllowedOrigins: null,
 };

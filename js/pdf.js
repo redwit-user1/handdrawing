@@ -2,7 +2,7 @@
  * pdf.js — 외부 라이브러리 없이 캔버스를 단일 페이지 PDF로 저장.
  * 캔버스를 JPEG으로 인코딩해 DCTDecode 스트림으로 임베드하는 최소 구조의 PDF를 만든다.
  */
-function downloadCanvasAsPDF(canvas, filename) {
+function buildCanvasPDFBlob(canvas) {
   const W = canvas.width, H = canvas.height;
 
   // 캔버스 → JPEG 바이트
@@ -54,7 +54,11 @@ function downloadCanvasAsPDF(canvas, filename) {
   push(xref);
   push(`trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`);
 
-  const blob = new Blob(chunks, { type: 'application/pdf' });
+  return new Blob(chunks, { type: 'application/pdf' });
+}
+
+function downloadCanvasAsPDF(canvas, filename) {
+  const blob = buildCanvasPDFBlob(canvas);
   const a = document.createElement('a');
   a.download = filename;
   a.href = URL.createObjectURL(blob);

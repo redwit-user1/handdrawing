@@ -15,6 +15,16 @@ npx serve .
 브라우저(태블릿 권장)에서 `http://<주소>:8000` 접속.
 HTTPS/localhost 환경에서는 PWA로 설치해 전체 화면 앱처럼 사용할 수 있습니다.
 
+## ELN(구노) 연계
+
+전자연구노트에 임베드하기 위한 인터페이스가 내장되어 있습니다:
+`index.html?embed=1`을 iframe으로 띄우면 postMessage로 노트 로드/저장/내보내기를
+제어할 수 있고, 변경마다 SHA-256 해시가 함께 전달되어 시점인증(TSA) 파이프라인에
+연결할 수 있습니다. 모든 획에는 작성 시각(`t`)이 기록됩니다.
+프로토콜 명세·호스트 예시·ELN 쪽 개선 필요사항은
+[docs/ELN-INTEGRATION.md](docs/ELN-INTEGRATION.md)와
+[examples/eln-host-demo.html](examples/eln-host-demo.html) 참고.
+
 ## 온프레미스(사내망) 배포
 
 이 앱은 온프레미스 배포를 전제로 설계되어 있습니다.

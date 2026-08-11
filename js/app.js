@@ -7,7 +7,18 @@
 
   const COLORS = ['#1f2328', '#dc2626', '#ea580c', '#16a34a', '#2563eb', '#9333ea'];
 
-  let state = Store.load();
+  // ELN 임베드 모드: ?embed=1 — 저장은 localStorage 대신 호스트(postMessage)로 위임
+  const params = new URLSearchParams(location.search);
+  const EMBED = params.get('embed') === '1';
+
+  let state;
+  if (EMBED) {
+    const note = Store.newNote('노트');
+    state = { version: 1, currentId: note.id, notes: [note] };
+    document.body.classList.add('embed');
+  } else {
+    state = Store.load();
+  }
   let saveTimer = null;
 
   const canvas = $('#board');
@@ -46,6 +57,7 @@
     if (!note) return;
     note.strokes = engine.strokes;
     note.updated = Date.now();
+    if (EMBED) { Bridge.sendChange(note); return; }
     if (!Store.save(state)) toast('저장 공간이 부족합니다');
   }
 
@@ -444,8 +456,17 @@
     toastTimer = setTimeout(() => { el.hidden = true; }, 2200);
   }
 
+  /* ============== 읽기 전용(열람) 모드 ============== */
+  function setReadonly(on) {
+    engine.readonly = on;
+    document.body.classList.toggle('readonly', on);
+    $('#note-title').readOnly = on;
+    engine.clearSelection();
+    setTool(on ? 'pan' : 'pen');
+  }
+
   /* ============== PWA ============== */
-  if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+  if ('serviceWorker' in navigator && location.protocol.startsWith('http') && !EMBED) {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }
 
@@ -454,4 +475,40 @@
   engine.setStrokes(note.strokes);
   $('#note-title').value = note.title;
   updateUndoButtons();
+  if (params.get('readonly') === '1') setReadonly(true);
+
+  if (EMBED) {
+    Bridge.init({
+      load(noteData) {
+        const cur = currentNote();
+        if (noteData) {
+          cur.title = noteData.title || cur.title;
+          cur.strokes = Array.isArray(noteData.strokes) ? noteData.strokes : [];
+        }
+        engine.setStrokes(cur.strokes);
+        $('#note-title').value = cur.title;
+      },
+      setReadonly,
+      async export(format) {
+        if (format === 'json') {
+          const cur = currentNote();
+          return { json: { title: cur.title, strokes: engine.strokes } };
+        }
+        const out = engine.renderExportCanvas();
+        if (!out) return { error: '내보낼 내용이 없습니다' };
+        if (format === 'png') return { dataUrl: out.toDataURL('image/png') };
+        if (format === 'pdf') {
+          const blob = buildCanvasPDFBlob(out);
+          const dataUrl = await new Promise((res, rej) => {
+            const r = new FileReader();
+            r.onload = () => res(r.result);
+            r.onerror = () => rej(new Error('PDF 인코딩 실패'));
+            r.readAsDataURL(blob);
+          });
+          return { dataUrl };
+        }
+        return { error: '알 수 없는 형식: ' + format };
+      },
+    });
+  }
 })();

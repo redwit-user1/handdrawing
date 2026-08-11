@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ELN 호스트 연동 데모</title>
+<link rel="icon" href="../icon.svg" type="image/svg+xml">
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  body { font-family: sans-serif; display: flex; flex-direction: column; height: 100vh; }
+  header { padding: 10px 14px; background: #1e293b; color: #fff; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  header b { margin-right: 8px; }
+  button { padding: 8px 14px; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; }
+  iframe { flex: 1; border: none; }
+  #log { height: 120px; overflow-y: auto; font: 12px/1.5 monospace; background: #0f172a; color: #7dd3fc; padding: 8px 12px; white-space: pre-wrap; word-break: break-all; }
+</style>
+</head>
+<body>
+<header>
+  <b>ELN 호스트 데모</b>
+  <button id="load-sample">샘플 노트 로드</button>
+  <button id="export-json">JSON 받기</button>
+  <button id="export-png">PNG 받기</button>
+  <button id="export-pdf">PDF 받기</button>
+  <button id="toggle-ro">열람 모드 토글</button>
+</header>
+<iframe id="editor" src="../index.html?embed=1" allow="clipboard-write"></iframe>
+<div id="log"></div>
+
+<script>
+// ELN(호스트) 쪽 연동 예시 — docs/ELN-INTEGRATION.md의 프로토콜 그대로 사용
+const frame = document.getElementById('editor');
+const logEl = document.getElementById('log');
+let readonly = false;
+let reqSeq = 0;
+
+function log(msg) {
+  logEl.textContent += msg + '\n';
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function send(msg) {
+  frame.contentWindow.postMessage(msg, location.origin);
+}
+
+window.addEventListener('message', e => {
+  const d = e.data;
+  if (!d || typeof d.type !== 'string' || !d.type.startsWith('handdrawing:')) return;
+
+  if (d.type === 'handdrawing:ready') {
+    log('◀ ready (에디터 초기화 완료, protocol v' + d.version + ')');
+  } else if (d.type === 'handdrawing:change') {
+    // 실제 ELN이라면 여기서 서버 저장 + sha256을 TSA 시점인증에 전달
+    log(`◀ change: 획 ${d.strokeCount}개, sha256=${(d.sha256 || '(HTTP라 해시 없음)').slice(0, 16)}…`);
+  } else if (d.type === 'handdrawing:export-result') {
+    if (d.error) log(`◀ export-result[${d.requestId}] 오류: ${d.error}`);
+    else if (d.json) log(`◀ export-result[${d.requestId}] JSON: 획 ${d.json.strokes.length}개`);
+    else log(`◀ export-result[${d.requestId}] ${d.format}: ${d.dataUrl.slice(0, 40)}… (${d.dataUrl.length} bytes)`);
+    window.__lastExport = d; // 테스트/디버깅용
+  }
+});
+
+document.getElementById('load-sample').addEventListener('click', () => {
+  send({
+    type: 'handdrawing:load',
+    note: {
+      title: '실험 스케치 #42',
+      strokes: [
+        { tool: 'pen', color: '#1f2328', size: 5, t: Date.now(),
+          points: [[100, 100, 0.5], [200, 140, 0.7], [300, 120, 0.6]] },
+        { tool: 'shape', shape: 'rect', color: '#2563eb', size: 5, t: Date.now(),
+          points: [[350, 80], [520, 200]] },
+      ],
+    },
+  });
+  log('▶ load: 샘플 노트(획 2개)');
+});
+
+function requestExport(format) {
+  const requestId = 'req-' + (++reqSeq);
+  send({ type: 'handdrawing:export', requestId, format });
+  log(`▶ export ${format} [${requestId}]`);
+}
+document.getElementById('export-json').addEventListener('click', () => requestExport('json'));
+document.getElementById('export-png').addEventListener('click', () => requestExport('png'));
+document.getElementById('export-pdf').addEventListener('click', () => requestExport('pdf'));
+
+document.getElementById('toggle-ro').addEventListener('click', () => {
+  readonly = !readonly;
+  send({ type: 'handdrawing:set-readonly', readonly });
+  log('▶ set-readonly: ' + readonly);
+});
+</script>
+</body>
+</html>
