@@ -144,15 +144,16 @@ ELN → 에디터:
    검증 필요 (기존 화학 구조식 SVG data URL도 동일 조건이므로 함께 확인).
    미지원이면 저장 시 data URL을 인라인 이미지 파일 경로로 치환하는 처리를
    `createNoteEditorDtl`의 Jsoup 단계에 추가하면 된다.
-2. **PNG를 파일 업로드 경로로 전환 (권장)** — 현재 data URL 방식은 사진 포함
-   노트에서 HTML이 수 MB로 커진다. `saveEditor`의 blob 인라인 이미지 업로드
-   경로(`img[src*="blob:"]` → 파일 저장)를 재활용해 PNG는 파일로, 획 JSON만
-   속성으로 유지하는 최적화를 검토.
-3. **권한 매핑 일관성** — editor-ai `readOnly`(또는 standalone
-   `handle.setReadOnly`)를 ELN `notePermission`과 연결할 것. 현재 ELN 에디터
-   페이지는 읽기 권한일 때 저장만 막고 에디터를 읽기 전용으로 전환하지 않는
-   기존 공백이 있다 — 손글씨 모달도 `editable` 게이트를 따르므로 이 연결만
-   되면 함께 잠긴다.
+2. ~~PNG를 파일 업로드 경로로 전환~~ — **완료**: editor-ai `insertDrawing`이
+   호스트 `onImageUpload`가 있으면 PNG를 파일로 업로드해(ELN에서는 blob: URL →
+   저장 시 인라인 이미지 파일) 본문 HTML 크기를 줄인다. 업로드 실패 시 data URL
+   폴백. 획 JSON(`data-strokes`)은 여전히 본문 속성에 남으므로, 사진을 많이
+   포함한 초대형 노트는 추후 획 JSON 별도 저장(프로토콜 v2)과 함께 검토.
+3. ~~권한 매핑 일관성~~ — **완료**: ELN 에디터 페이지가 읽기 권한이면
+   `editor.setReadOnly(true)`로 뷰어 모드 전환(손글씨 모달 포함 편집 표면 전체가
+   `editable` 게이트로 잠김). 읽기 전용 열람자도 본문 인라인 이미지를 볼 수
+   있도록 이미지 조회 엔드포인트 권한을 쓰기(hasWritable) → 조회(hasReadable)
+   기준으로 완화.
 4. **필기 인식 서버 공용화 (선택)** — 폐쇄망 고객사에서 필기 인식이 필요하면
    구노 백엔드에 인식 엔드포인트를 두고 `config.js`의 `recognizerEndpoint`로
    지정 (README의 API 사양 참고). iPad Safari 사용자도 이 경로로 인식 가능.
