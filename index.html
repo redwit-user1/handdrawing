@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#1a1c20">
+<title>손글씨 노트</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div id="app">
+
+  <!-- 상단 툴바 -->
+  <header id="toolbar">
+    <div class="tb-group">
+      <button id="btn-notes" class="tb-btn" title="노트 목록" aria-label="노트 목록">
+        <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16" stroke-linecap="round"/></svg>
+      </button>
+      <input id="note-title" type="text" value="새 노트" maxlength="60" aria-label="노트 제목">
+    </div>
+
+    <div class="tb-group">
+      <button id="btn-undo" class="tb-btn" title="실행 취소 (Ctrl+Z)" disabled>
+        <svg viewBox="0 0 24 24"><path d="M9 14 4 9l5-5" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 9h10a6 6 0 0 1 0 12h-3" stroke-linecap="round"/></svg>
+      </button>
+      <button id="btn-redo" class="tb-btn" title="다시 실행 (Ctrl+Y)" disabled>
+        <svg viewBox="0 0 24 24"><path d="m15 14 5-5-5-5" stroke-linecap="round" stroke-linejoin="round"/><path d="M20 9H10a6 6 0 0 0 0 12h3" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+
+    <div class="tb-group" id="tool-group" role="radiogroup" aria-label="도구">
+      <button class="tb-btn tool" data-tool="pen" title="펜" aria-pressed="true">
+        <svg viewBox="0 0 24 24"><path d="M17 3a2.8 2.8 0 0 1 4 4L8 20l-5 1 1-5Z" stroke-linejoin="round"/></svg>
+      </button>
+      <button class="tb-btn tool" data-tool="highlighter" title="형광펜" aria-pressed="false">
+        <svg viewBox="0 0 24 24"><path d="m9 11 6 6M4 21l3-1 12-12a2.1 2.1 0 0 0-3-3L4 17l-1 3Z" stroke-linejoin="round"/><path d="M3 21h7" stroke-linecap="round" opacity=".5"/></svg>
+      </button>
+      <button class="tb-btn tool" data-tool="eraser" title="지우개" aria-pressed="false">
+        <svg viewBox="0 0 24 24"><path d="m7 21-4-4a2 2 0 0 1 0-3L14 3a2 2 0 0 1 3 0l4 4a2 2 0 0 1 0 3L11 21Z" stroke-linejoin="round"/><path d="M7 21h14" stroke-linecap="round"/></svg>
+      </button>
+      <button class="tb-btn tool" data-tool="pan" title="이동" aria-pressed="false">
+        <svg viewBox="0 0 24 24"><path d="M18 11V6.5a1.5 1.5 0 0 0-3 0m3 4.5v-2a1.5 1.5 0 0 1 3 0V14a7 7 0 0 1-7 7h-1c-2.5 0-4-1-5.5-3L4 13.5a1.6 1.6 0 0 1 2.5-2L8 13V5a1.5 1.5 0 0 1 3 0m0 6V4a1.5 1.5 0 0 1 3 0v7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </div>
+
+    <div class="tb-group" id="color-group" aria-label="색상"></div>
+
+    <div class="tb-group" id="size-group" role="radiogroup" aria-label="굵기">
+      <button class="tb-btn size" data-size="2.5" title="가늘게"><span class="dot" style="width:5px;height:5px"></span></button>
+      <button class="tb-btn size" data-size="5" title="보통" aria-pressed="true"><span class="dot" style="width:9px;height:9px"></span></button>
+      <button class="tb-btn size" data-size="9" title="굵게"><span class="dot" style="width:14px;height:14px"></span></button>
+    </div>
+
+    <div class="tb-group">
+      <button id="btn-touchdraw" class="tb-btn" title="손가락으로 그리기 켜기/끄기" aria-pressed="true">
+        <svg viewBox="0 0 24 24"><path d="M8 13V5.5a1.5 1.5 0 0 1 3 0V12m0-1.5v-2a1.5 1.5 0 0 1 3 0V12m0-1v-1a1.5 1.5 0 0 1 3 0v4a7 7 0 0 1-7 7c-2.5 0-4-1-5.5-3l-2-3a1.6 1.6 0 0 1 2.5-2L8 14" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button id="btn-grid" class="tb-btn" title="바둑판 점 표시" aria-pressed="true">
+        <svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="1.3" fill="currentColor" stroke="none"/><circle cx="12" cy="6" r="1.3" fill="currentColor" stroke="none"/><circle cx="18" cy="6" r="1.3" fill="currentColor" stroke="none"/><circle cx="6" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="18" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="6" cy="18" r="1.3" fill="currentColor" stroke="none"/><circle cx="12" cy="18" r="1.3" fill="currentColor" stroke="none"/><circle cx="18" cy="18" r="1.3" fill="currentColor" stroke="none"/></svg>
+      </button>
+    </div>
+
+    <div class="tb-group" id="zoom-group">
+      <button id="btn-zoom-out" class="tb-btn" title="축소">−</button>
+      <button id="zoom-label" class="tb-btn text" title="100%로 재설정">100%</button>
+      <button id="btn-zoom-in" class="tb-btn" title="확대">＋</button>
+    </div>
+
+    <div class="tb-group">
+      <button id="btn-export" class="tb-btn" title="PNG로 내보내기">
+        <svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" stroke-linecap="round"/></svg>
+      </button>
+      <button id="btn-clear" class="tb-btn danger" title="전체 지우기">
+        <svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- 캔버스 영역 -->
+  <main id="canvas-wrap">
+    <canvas id="board"></canvas>
+  </main>
+
+  <!-- 노트 목록 패널 -->
+  <div id="panel-backdrop" hidden></div>
+  <aside id="notes-panel" hidden>
+    <div class="panel-head">
+      <h2>내 노트</h2>
+      <button id="btn-new-note" class="tb-btn" title="새 노트">
+        <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+    <ul id="notes-list"></ul>
+  </aside>
+
+  <div id="toast" hidden></div>
+</div>
+
+<script src="js/store.js"></script>
+<script src="js/engine.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

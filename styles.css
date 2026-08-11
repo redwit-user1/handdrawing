@@ -1,0 +1,282 @@
+/* ===== 기본 ===== */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --bar-bg: #ffffff;
+  --bar-border: #e2e4e8;
+  --btn-fg: #3a3f46;
+  --btn-hover: #eef0f3;
+  --btn-active-bg: #dbe7ff;
+  --btn-active-fg: #1d4ed8;
+  --panel-bg: #ffffff;
+  --text: #1f2328;
+  --text-dim: #6b7280;
+  --danger: #dc2626;
+  --canvas-area: #e8eaee;
+  --shadow: 0 4px 24px rgba(0,0,0,.14);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bar-bg: #1e2126;
+    --bar-border: #33373e;
+    --btn-fg: #c9ced6;
+    --btn-hover: #2b2f36;
+    --btn-active-bg: #24406e;
+    --btn-active-fg: #9ec1ff;
+    --panel-bg: #22252b;
+    --text: #e5e8ec;
+    --text-dim: #9aa2ad;
+    --canvas-area: #14161a;
+  }
+}
+
+html, body, #app {
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo",
+    "Noto Sans KR", sans-serif;
+  color: var(--text);
+  background: var(--canvas-area);
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: none;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+}
+
+/* ===== 툴바 ===== */
+#toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px max(10px, env(safe-area-inset-right)) 8px max(10px, env(safe-area-inset-left));
+  padding-top: max(8px, env(safe-area-inset-top));
+  background: var(--bar-bg);
+  border-bottom: 1px solid var(--bar-border);
+  z-index: 20;
+}
+
+.tb-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+  border-right: 1px solid var(--bar-border);
+}
+.tb-group:last-child { border-right: none; }
+
+/* 태블릿 터치를 위해 44px 이상 히트 영역 */
+.tb-btn {
+  min-width: 44px;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--btn-fg);
+  font-size: 20px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.tb-btn svg {
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+}
+.tb-btn:hover { background: var(--btn-hover); }
+.tb-btn:disabled { opacity: .35; cursor: default; }
+.tb-btn:disabled:hover { background: transparent; }
+.tb-btn[aria-pressed="true"] {
+  background: var(--btn-active-bg);
+  color: var(--btn-active-fg);
+}
+.tb-btn.danger { color: var(--danger); }
+.tb-btn.text {
+  font-size: 13px;
+  font-weight: 600;
+  min-width: 56px;
+  font-variant-numeric: tabular-nums;
+}
+
+#note-title {
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 600;
+  width: 150px;
+  min-height: 44px;
+  padding: 0 6px;
+  border-radius: 8px;
+}
+#note-title:focus {
+  outline: 2px solid var(--btn-active-fg);
+  background: var(--btn-hover);
+}
+
+/* 색상 버튼 */
+.color-btn {
+  width: 34px;
+  height: 34px;
+  margin: 5px 2px;
+  border-radius: 50%;
+  border: 2px solid var(--bar-border);
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+}
+.color-btn.selected {
+  border-color: var(--btn-active-fg);
+  box-shadow: 0 0 0 3px var(--btn-active-bg);
+}
+#color-custom {
+  width: 34px;
+  height: 34px;
+  margin: 5px 2px;
+  border-radius: 50%;
+  border: 2px dashed var(--bar-border);
+  background: conic-gradient(red, yellow, lime, cyan, blue, magenta, red);
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+  padding: 0;
+  overflow: hidden;
+}
+#color-custom::-webkit-color-swatch-wrapper { padding: 0; opacity: 0; }
+#color-custom::-webkit-color-swatch { border: none; opacity: 0; }
+
+.size .dot {
+  display: block;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* ===== 캔버스 ===== */
+#canvas-wrap {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+}
+#board {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  cursor: crosshair;
+}
+#board.tool-pan { cursor: grab; }
+#board.tool-pan.dragging { cursor: grabbing; }
+
+/* ===== 노트 패널 ===== */
+#notes-panel[hidden],
+#panel-backdrop[hidden],
+#toast[hidden] { display: none; }
+
+#panel-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,.35);
+  z-index: 30;
+}
+#notes-panel {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: min(320px, 85vw);
+  background: var(--panel-bg);
+  box-shadow: var(--shadow);
+  z-index: 31;
+  display: flex;
+  flex-direction: column;
+  padding-top: env(safe-area-inset-top);
+  padding-left: env(safe-area-inset-left);
+}
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--bar-border);
+}
+.panel-head h2 { font-size: 17px; }
+
+#notes-list {
+  list-style: none;
+  overflow-y: auto;
+  flex: 1;
+  padding: 8px;
+}
+#notes-list li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 10px;
+  border-radius: 12px;
+  cursor: pointer;
+  min-height: 56px;
+}
+#notes-list li:hover { background: var(--btn-hover); }
+#notes-list li.current { background: var(--btn-active-bg); }
+#notes-list .note-info { flex: 1; min-width: 0; }
+#notes-list .note-name {
+  font-weight: 600;
+  font-size: 15px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#notes-list .note-meta {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: 2px;
+}
+#notes-list .note-del {
+  min-width: 40px;
+  min-height: 40px;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  border-radius: 8px;
+  font-size: 18px;
+  cursor: pointer;
+}
+#notes-list .note-del:hover { color: var(--danger); background: var(--btn-hover); }
+
+/* ===== 토스트 ===== */
+#toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(24px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  background: rgba(20, 22, 26, .92);
+  color: #fff;
+  padding: 10px 18px;
+  border-radius: 999px;
+  font-size: 14px;
+  z-index: 50;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+/* 좁은 화면(세로 태블릿)에서는 툴바 압축 */
+@media (max-width: 740px) {
+  #note-title { width: 90px; }
+  .tb-group { padding: 0 2px; gap: 2px; }
+  #zoom-group { display: none; }
+}
