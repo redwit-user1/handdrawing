@@ -6,10 +6,12 @@
 
 ## 0. 분석 범위와 전제
 
-- 구노 ELN 본체 코드는 별도 조직 저장소에 있어 이 분석 세션에서는 직접 열람하지
-  못했다. 따라서 ELN 내부 구현에 대한 항목은 **일반적인 구노 제품 구조(웹 프런트 +
-  메인 서버 + 시점인증 파이프라인)를 전제로 한 제안**이며, 실제 코드와 대조해
-  확정해야 한다.
+- 이 문서는 **실제 저장소 대조를 마친 상태**다: 온프레미스 구축형 구노
+  ([Goono-ELN](https://github.com/redwit-dev/Goono-ELN), Spring Boot + Thymeleaf)와
+  실제 노트 에디터([NewEditor / editor-ai](https://github.com/redwit-dev/NewEditor),
+  Tiptap 기반 standalone 번들)를 직접 분석해 반영했다. 초기 버전에서 일반적인
+  제품 구조를 전제로 썼던 항목(특히 시점인증 연계, §2.3·§3-4)은 실제 파이프라인에
+  맞게 수정되었다.
 - 참고한 사내 자료: 화학 에디터 PoC(chemeditor)의 ELN 요구사항 문서 —
   "노트 본문에 에디터 **임베드**(P0)", "연구노트 **법적 무결성**(전자연구노트
   관리지침, TSA/타임스탬프)", "폐쇄망 온프레미스, 외부 CDN 의존 없음".
@@ -19,14 +21,20 @@
 
 | 시나리오 | 설명 | 공수 | 권장도 |
 | --- | --- | --- | --- |
-| **A. iframe 임베드** | ELN 노트 화면에 iframe으로 삽입, postMessage로 로드/저장/내보내기 제어 | ELN 쪽 호스트 컴포넌트 1개 + 저장 API | ★ **권장** |
+| **A1. 에디터 본문 블록** | editor-ai(NewEditor)의 커스텀 노드(`img[data-strokes]`) + iframe 편집 모달 — 노트 본문 안에 글·손글씨 혼합 | **구현 완료** (editor-ai SDK) | ★ **권장·적용됨** |
+| A2. 전면 iframe 페이지 | ELN에 별도 write mode 페이지를 만들어 손글씨 전용 노트로 사용 | ELN 쪽 페이지 + 저장 API | 손글씨 전용 노트 필요 시 |
 | B. 첨부파일 워크플로 | 에디터를 별도 페이지로 쓰고 PNG/PDF/JSON을 ELN에 첨부 | 거의 없음 (현재도 가능) | 임시 방편 |
 | C. 컴포넌트 이식 | 엔진(engine.js)을 ELN 프런트(React)에 네이티브 포팅 | 큼 (빌드 체계·상태 관리 통합) | 장기 검토 |
 
-**A안을 권장하는 이유**: 에디터가 프레임워크 독립(순수 JS)이라 ELN 프런트 기술
-스택과 충돌하지 않고, 별도 배포·버전 관리가 가능하며, iframe 격리로 스타일/이벤트
-간섭이 없다. chemeditor PoC(Ketcher 임베드)와 동일한 통합 패턴이므로 ELN 쪽에
-비슷한 호스트 코드가 이미 있다면 재사용할 수 있다.
+**A1안이 적용된 이유**: 구축형 구노의 실제 노트 편집은 editor-ai standalone 번들이
+전면 마운트되어 `editor.getHTML()`을 저장하는 구조다. editor-ai의 Tiptap 스키마에는
+iframe 노드가 없어(파싱 시 드롭) 본문 임베드는 커스텀 노드로만 가능하고, 이는
+Ketcher 화학 구조식(`img[data-molfile]` + 재편집 모달)과 동일한 패턴이다.
+editor-ai에 `config.drawingEditorUrl` 옵션·`DrawingImage` 노드·`DrawingModal`
+(iframe + postMessage 호스트)이 추가되어, 본 에디터를 정적 자산으로 서빙하기만 하면
+본문에 손글씨 블록을 삽입·재편집할 수 있다. 삽입 결과는
+`<img src="data:image/png..." data-strokes="{…}" data-drawing-sha256="…">`로
+저장되어 노트 HTML → PDF 증적 경로에 이미지로 포함된다.
 
 ## 2. 에디터 쪽에 구현되어 있는 연계 인터페이스
 
@@ -70,10 +78,17 @@ ELN → 에디터:
 
 ### 2.3 무결성·증적 지원
 
-- **`change` 메시지의 `sha256`**: `{title, strokes}` 정규화 JSON의 SHA-256.
-  ELN이 저장 시점에 이 해시를 시점인증(TSA) 파이프라인에 그대로 전달하면
-  "이 시점에 이 내용이 존재했다"를 증명할 수 있다. (Web Crypto 사용 —
-  HTTPS/localhost 필수, 아니면 null로 옴)
+- **실제 구노 시점인증 파이프라인과의 관계 (중요)**: 구축형 Goono-ELN의 TSA는
+  클라이언트 해시를 받지 않는다. `ElnScheduler`가 1분 주기로 점검완료 노트의
+  파일들을 Synap 변환 서버로 **PDF 병합·변환**한 뒤, 그 **PDF를 Amano TSA에
+  전달**하고 PDF의 SHA-256을 **서버가 직접 계산·저장**한다. 즉 법적 증적의
+  단위는 서버 생성 PDF다. 따라서 손글씨 내용이 증적에 포함되려면 노트 HTML 안에
+  렌더된 PNG(`<img>`)로 존재해야 하며, A1 통합(본문 블록)이 정확히 이 조건을
+  만족한다.
+- **`change`/블록의 `sha256`**: `{title, strokes}` 정규화 JSON의 SHA-256.
+  TSA 입력이 아니라 **보조 감사 메타데이터**다 — 획 원본(`data-strokes`)이
+  사후 수정되지 않았는지 검증하는 용도로 블록 속성(`data-drawing-sha256`)에
+  함께 저장된다. (Web Crypto 사용 — HTTPS/localhost 필수, 아니면 null)
 - **획 단위 작성 시각**: 모든 획에 `t`(epoch ms)가 기록되어 작성 과정의
   감사 추적(audit trail)이 가능하다. 해시 대상에 포함되므로 사후 조작하면
   해시가 달라진다.
@@ -105,33 +120,59 @@ ELN → 에디터:
 
 버전 마이그레이션을 위해 ELN 저장 시 `schemaVersion: 1`을 함께 저장할 것을 권장.
 
-## 3. ELN 쪽 개선/추가 필요 사항 (우선순위순)
+## 3. ELN 쪽 현황과 남은 확인/개선 사항 (실코드 대조 결과)
 
-1. **손글씨 블록 타입 추가** — 노트 본문 블록(또는 첨부) 타입으로
-   `handdrawing`을 추가하고, 위 JSON + 렌더링된 PNG 미리보기를 함께 저장.
-   목록/검색 화면에서는 PNG 미리보기만 보여주면 된다.
-2. **iframe 호스트 컴포넌트** — `ready → load → change 수신 → 저장 API 호출`
-   흐름의 React 컴포넌트 1개. `examples/eln-host-demo.html`의 스크립트를
-   그대로 옮기면 된다. 편집 종료 시 `export`(png)로 미리보기 갱신.
-3. **저장 API/스키마** — 노트 JSON + sha256 + 사용자/시각을 저장하는 엔드포인트.
-   구노의 기존 파일/블록 저장 구조에 맞춰 얹되, **수정 시 이전 버전을 보존**
-   (연구노트 무결성 — 덮어쓰기 금지, 버전 체인).
-4. **시점인증(TSA) 연계** — `change`의 sha256을 기존 구노 시점인증 파이프라인에
-   전달. 획 데이터 원문을 다시 해시하지 말고 에디터가 준 해시를 쓰면
-   에디터/서버 간 해시 불일치 문제를 피할 수 있다 (서버에서 재계산 검증은 권장).
-5. **연구노트 PDF 병합** — 구노의 노트 → PDF 증빙 생성 시, 손글씨 블록은
-   `export pdf` 결과(또는 저장해 둔 PNG)를 해당 위치에 삽입.
-6. **권한 매핑** — ELN의 열람/편집 권한을 `?readonly=1` 또는 `set-readonly`
-   메시지로 전달. 서명·잠금된 노트는 반드시 열람 모드로 띄울 것.
-7. **필기 인식 서버 공용화 (선택)** — 폐쇄망 고객사에서 필기 인식이 필요하면
+**추가 개발 없이 이미 충족되는 것** (A1 통합 기준):
+
+- **손글씨 블록 타입 / 호스트 컴포넌트** — editor-ai에 `DrawingImage` 노드와
+  `DrawingModal`(iframe postMessage 호스트)로 구현 완료. ELN은 standalone 번들
+  교체 + `config.drawingEditorUrl` 한 줄로 활성화된다
+  (`note_details_editor.html` 반영).
+- **저장/버전 보존** — 블록이 노트 HTML에 포함되므로 기존
+  `/api/eln/note/editor/saveEditor`가 그대로 처리한다. 저장마다 새 HTML 파일 +
+  에디터 이력 행을 만드는 기존 구조가 "덮어쓰기 금지·버전 체인" 요건을 충족.
+- **PDF 증적 포함** — 손글씨가 렌더된 PNG `<img>`로 본문에 존재하므로 기존
+  노트 → Synap PDF 변환 → Amano TSA 경로에 자동 포함된다.
+- **프레이밍 보안** — 같은 오리진 서빙(`/lib/handdrawing/`) +
+  `X-Frame-Options: sameOrigin` + `embedAllowedOrigins` 기본값(동일 오리진)이
+  그대로 맞물린다. 추가 설정 불요.
+
+**남은 확인/개선 사항 (우선순위순)**:
+
+1. **Synap 변환기의 `data:` URL 렌더 검증** — 손글씨 PNG는 data URL로 본문에
+   저장된다. Synap 서버가 HTML 변환 시 data URL 이미지를 렌더하는지 실환경
+   검증 필요 (기존 화학 구조식 SVG data URL도 동일 조건이므로 함께 확인).
+   미지원이면 저장 시 data URL을 인라인 이미지 파일 경로로 치환하는 처리를
+   `createNoteEditorDtl`의 Jsoup 단계에 추가하면 된다.
+2. **PNG를 파일 업로드 경로로 전환 (권장)** — 현재 data URL 방식은 사진 포함
+   노트에서 HTML이 수 MB로 커진다. `saveEditor`의 blob 인라인 이미지 업로드
+   경로(`img[src*="blob:"]` → 파일 저장)를 재활용해 PNG는 파일로, 획 JSON만
+   속성으로 유지하는 최적화를 검토.
+3. **권한 매핑 일관성** — editor-ai `readOnly`(또는 standalone
+   `handle.setReadOnly`)를 ELN `notePermission`과 연결할 것. 현재 ELN 에디터
+   페이지는 읽기 권한일 때 저장만 막고 에디터를 읽기 전용으로 전환하지 않는
+   기존 공백이 있다 — 손글씨 모달도 `editable` 게이트를 따르므로 이 연결만
+   되면 함께 잠긴다.
+4. **필기 인식 서버 공용화 (선택)** — 폐쇄망 고객사에서 필기 인식이 필요하면
    구노 백엔드에 인식 엔드포인트를 두고 `config.js`의 `recognizerEndpoint`로
    지정 (README의 API 사양 참고). iPad Safari 사용자도 이 경로로 인식 가능.
-8. **CSP/보안 헤더** — 에디터를 별도 오리진에 배포한다면 ELN의
-   `frame-src`에 에디터 오리진 추가 + 에디터 `config.js`의
-   `embedAllowedOrigins`에 ELN 오리진 명시(양방향 화이트리스트).
+5. **교차 오리진 배포 시에만** — 에디터를 별도 오리진에 두는 경우 ELN
+   `frame-src`(CSP 도입 시)에 에디터 오리진 추가 + `embedAllowedOrigins`에
+   ELN 오리진 명시(양방향 화이트리스트).
+
+**A2(전면 iframe 페이지)로 확장할 경우에만** 저장 API·손글씨 전용 write mode가
+추가로 필요하며, 그때는 400ms `change`마다 저장하지 말고 ELN의 기존 autosave
+주기(분 단위)·수동 저장에 맞춰 **호스트가 버퍼링**해야 한다 (저장 1회 = 파일
+1개 + 버전 1개인 구조라 change마다 저장하면 파일이 폭증한다).
 
 ## 4. 에디터 쪽 개선 항목 진행 현황
 
+- ✅ **editor-ai(NewEditor) 본문 블록 통합**: `DrawingImage` 노드 +
+  `DrawingModal`(iframe postMessage 호스트) + `config.drawingEditorUrl` 옵션.
+  삽입 시 json export(디바운스 무관 최신 획) + png export를 받아
+  `img[data-strokes][data-drawing-sha256]`로 본문에 저장, 더블클릭 재편집.
+  구축형 구노에는 standalone 번들 교체 + 정적 자산(`/lib/handdrawing/`) 배치로
+  적용됨.
 - ✅ **동시 편집 충돌 감지**: `rev`/`baseRev`/`ack-save` 프로토콜 구현 (§2.2).
   서버 쪽 충돌 판정·잠금 정책은 ELN 몫.
 - ✅ **이미지 삽입**: 파일 선택·클립보드 붙여넣기로 실험 사진을 노트에 넣고
