@@ -155,8 +155,11 @@ ELN → 에디터:
    있도록 이미지 조회 엔드포인트 권한을 쓰기(hasWritable) → 조회(hasReadable)
    기준으로 완화.
 4. **필기 인식 서버 공용화 (선택)** — 폐쇄망 고객사에서 필기 인식이 필요하면
-   구노 백엔드에 인식 엔드포인트를 두고 `config.js`의 `recognizerEndpoint`로
-   지정 (README의 API 사양 참고). iPad Safari 사용자도 이 경로로 인식 가능.
+   [`server/recognizer/`](../server/recognizer/)(PaddleOCR 기반 무료 참조 구현,
+   Docker 이미지에 모델 포함)를 ELN 서버 옆에 띄우고, ELN 리버스 프록시의
+   `/api/recognize`로 노출한 뒤 `config.js`의 `recognizerEndpoint`로 지정한다.
+   같은 오리진이 되므로 CORS 설정이 필요 없고, iPad Safari 사용자도 이 경로로
+   인식 가능.
 5. **교차 오리진 배포 시에만** — 에디터를 별도 오리진에 두는 경우 ELN
    `frame-src`(CSP 도입 시)에 에디터 오리진 추가 + `embedAllowedOrigins`에
    ELN 오리진 명시(양방향 화이트리스트).

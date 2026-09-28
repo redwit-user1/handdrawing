@@ -71,11 +71,12 @@ const Recognizer = (() => {
   }
 
   /**
-   * strokes: 엔진의 획 배열 (도형은 제외하고 자유 곡선만 사용)
+   * strokes: 엔진의 획 배열 (펜 획만 사용 — 도형·형광펜·삽입 이미지는 제외)
    * 반환: 인식된 문자열 (미지원 시 null)
    */
   async function recognize(strokes) {
-    const inkStrokes = strokes.filter(s => s.tool !== 'shape' && s.points.length > 0);
+    // 이미지의 points는 배치 사각형 두 꼭짓점이라 넣으면 대각선 획으로 인식이 오염된다
+    const inkStrokes = strokes.filter(s => (s.tool || 'pen') === 'pen' && s.points.length > 0);
     if (inkStrokes.length === 0) return '';
     if (hasNativeAPI()) return recognizeNative(inkStrokes);
     if (endpoint()) return recognizeRemote(inkStrokes);

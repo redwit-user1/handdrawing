@@ -65,9 +65,11 @@ Content-Type: application/json
 응답: { "text": "인식된 문자열" }
 ```
 
-서버 구현 후보: 획 좌표를 이미지로 렌더링한 뒤 TrOCR 계열 한국어 손글씨 모델
-(Hugging Face 공개 모델)로 인식하거나, MyScript 같은 상용 온프레미스 SDK를
-연동하면 됩니다. 앱 쪽은 위 JSON 계약만 지키면 어떤 구현이든 무방합니다.
+**무료 참조 구현이 포함되어 있습니다**: [`server/recognizer/`](server/recognizer/) —
+PaddleOCR 한국어 인식 모델 기반, CPU·오프라인 동작, Docker 이미지에 모델 포함
+(폐쇄망 반입 가능). 합성 손글씨 기준 문자 오류율 6.5%(또박또박한 필기)~14.2%(흘림),
+한 줄 30~80ms. 앱 쪽은 위 JSON 계약만 지키면 되므로 TrOCR 파인튜닝 모델이나
+MyScript 같은 상용 온프레미스 SDK로 교체해도 됩니다.
 
 ## 브라우저 호환성 (iPad 포함)
 
