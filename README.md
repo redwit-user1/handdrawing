@@ -117,8 +117,9 @@ MyScript 같은 상용 온프레미스 SDK로 교체해도 됩니다.
 - **노트 관리**: 여러 노트 생성/전환/삭제/이름 변경, `localStorage` 자동 저장
   (+ `config.js`의 `apiBase` 설정 시 REST 서버 동기화 — API 사양은 config.js 주석 참고)
 - **전체 백업/복원**: 모든 노트를 JSON 파일로 내보내고 다른 기기·브라우저에서 병합 복원
-- **내보내기**: PNG 이미지 또는 PDF 문서 (외부 라이브러리 없이 직접 PDF 생성,
-  콘텐츠 경계를 계산해 여백 포함 고해상도로 저장)
+- **내보내기**: PNG 이미지(한 장) 또는 **A4 여러 페이지 PDF** (외부 라이브러리 없이 직접
+  PDF 생성). 긴 노트는 필기 없는 가로 여백에서 페이지를 나눠 글씨가 잘리지 않고,
+  페이지마다 따로 렌더해 해상도를 유지한다
 
 ## 키보드 단축키 (키보드 연결 시)
 
@@ -138,7 +139,7 @@ index.html          앱 셸과 툴바 마크업
 styles.css          태블릿 친화적 UI 스타일 (다크 모드 지원)
 js/store.js         localStorage 노트 저장소
 js/engine.js        캔버스 드로잉 엔진 (입력 처리·렌더링·선택·실행 취소)
-js/pdf.js           의존성 없는 단일 페이지 PDF 생성기 (JPEG DCTDecode 임베드)
+js/pdf.js           의존성 없는 A4 여러 페이지 PDF 생성기 (JPEG DCTDecode 임베드)
 js/recognize.js     Handwriting Recognition API 래퍼 (필기 → 텍스트)
 js/app.js           UI ↔ 엔진 ↔ 저장소 연결
 manifest.webmanifest, sw.js, icon.svg   PWA 리소스

@@ -954,8 +954,8 @@ class DrawingEngine {
 
   /* ============== 내보내기 ============== */
 
-  /** 콘텐츠 경계를 계산해 흰 배경의 캔버스로 렌더링 (없으면 null) */
-  renderExportCanvas() {
+  /** 콘텐츠 경계 (굵기·여백 포함, 월드 좌표) — 내용이 없으면 null */
+  _contentBounds(margin = 40) {
     if (this.strokes.length === 0) return null;
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const s of this.strokes) {
@@ -967,20 +967,66 @@ class DrawingEngine {
         if (y + half > maxY) maxY = y + half;
       }
     }
-    const margin = 40;
-    minX -= margin; minY -= margin; maxX += margin; maxY += margin;
-    const w = maxX - minX, h = maxY - minY;
-    const exportScale = Math.min(2, 4096 / Math.max(w, h));
+    return { minX: minX - margin, minY: minY - margin, maxX: maxX + margin, maxY: maxY + margin };
+  }
 
+  /** 월드 좌표 영역을 흰 배경 캔버스로 렌더 (긴 변 4096px, 최대 2배율) */
+  _renderRegion(x, y, w, h) {
+    const exportScale = Math.min(2, 4096 / Math.max(w, h));
     const out = document.createElement('canvas');
     out.width = Math.max(1, Math.round(w * exportScale));
     out.height = Math.max(1, Math.round(h * exportScale));
     const octx = out.getContext('2d');
     octx.fillStyle = '#ffffff';
     octx.fillRect(0, 0, out.width, out.height);
-    octx.setTransform(exportScale, 0, 0, exportScale, -minX * exportScale, -minY * exportScale);
+    octx.setTransform(exportScale, 0, 0, exportScale, -x * exportScale, -y * exportScale);
     for (const s of this.strokes) this._drawStroke(octx, s);
     return out;
+  }
+
+  /** 콘텐츠 경계를 계산해 흰 배경의 캔버스 한 장으로 렌더링 (없으면 null) */
+  renderExportCanvas() {
+    const b = this._contentBounds();
+    if (!b) return null;
+    return this._renderRegion(b.minX, b.minY, b.maxX - b.minX, b.maxY - b.minY);
+  }
+
+  /**
+   * 콘텐츠를 페이지(세로/가로 비율 = aspect) 단위로 나눠 페이지별 캔버스로 렌더링.
+   *
+   * 세로로 긴 노트를 한 장으로 내보내면 해상도가 긴 변 기준으로 떨어지고, 연구노트
+   * PDF에 넣을 때 한 페이지에 작게 축소된다. 페이지마다 따로 렌더해 해상도를 지키고,
+   * 경계는 가능한 한 필기가 없는 가로 여백에서 잘라 글씨가 두 페이지로 갈리지 않게 한다.
+   *
+   * 페이지 폭은 콘텐츠 폭과 minPageWidth 중 큰 값 — 좁은 메모가 종이 폭에 맞춰
+   * 과도하게 확대되지 않도록 한다 (기본 700 ≈ A4 본문 폭을 화면 배율 1로 쓴 크기).
+   * 반환: 캔버스 배열 (내용이 없으면 빈 배열)
+   */
+  renderExportPages(aspect = A4_BODY_ASPECT, minPageWidth = 700) {
+    const b = this._contentBounds();
+    if (!b) return [];
+    const w = Math.max(b.maxX - b.minX, minPageWidth);
+    const pageH = w * aspect;
+    const occupied = mergeIntervals(this.strokes.map(s => {
+      let y0 = Infinity, y1 = -Infinity;
+      for (const [, y] of strokeSamplePoints(s)) {
+        if (y < y0) y0 = y;
+        if (y > y1) y1 = y;
+      }
+      return [y0 - s.size, y1 + s.size];
+    }));
+
+    const pages = [];
+    let top = b.minY;
+    while (b.maxY - top > pageH) {
+      const ideal = top + pageH;
+      // 페이지 아래쪽 25% 안에서 가장 아래에 있는 빈 가로 여백을 찾는다 (없으면 그냥 자름)
+      const cut = findGapCut(occupied, top + pageH * 0.75, ideal) ?? ideal;
+      pages.push(this._renderRegion(b.minX, top, w, cut - top));
+      top = cut;
+    }
+    pages.push(this._renderRegion(b.minX, top, w, b.maxY - top));
+    return pages;
   }
 
   exportPNG(title) {
@@ -1019,6 +1065,38 @@ function distToSegmentSq(px, py, x1, y1, x2, y2) {
 }
 
 function round2(n) { return Math.round(n * 100) / 100; }
+
+/** A4 본문 비율 (세로/가로) — 297×210mm에서 사방 15mm 여백을 뺀 영역 */
+const A4_BODY_ASPECT = (297 - 30) / (210 - 30);
+
+/** [시작, 끝] 구간들을 정렬·병합 */
+function mergeIntervals(spans) {
+  const sorted = spans.filter(([a, b]) => b >= a).sort((p, q) => p[0] - q[0]);
+  const out = [];
+  for (const [a, b] of sorted) {
+    const last = out[out.length - 1];
+    if (last && a <= last[1]) last[1] = Math.max(last[1], b);
+    else out.push([a, b]);
+  }
+  return out;
+}
+
+/**
+ * [lo, hi] 범위에서 어떤 구간(필기)에도 걸치지 않는 y 중 가장 아래쪽 빈 틈의 중앙을
+ * 반환한다. 틈이 없으면 null.
+ */
+function findGapCut(occupied, lo, hi) {
+  let best = null;
+  let prevEnd = -Infinity;
+  for (const [a, b] of occupied.concat([[Infinity, Infinity]])) {
+    // 빈 틈: (prevEnd, a)
+    const g0 = Math.max(prevEnd, lo), g1 = Math.min(a, hi);
+    if (g1 > g0) best = (g0 + g1) / 2;
+    prevEnd = Math.max(prevEnd, b);
+    if (prevEnd >= hi) break;
+  }
+  return best;
+}
 
 /* 획을 (dx, dy)만큼 평행 이동 */
 function translateStroke(stroke, dx, dy) {

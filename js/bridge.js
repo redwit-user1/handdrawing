@@ -9,14 +9,19 @@
  *   { type:'handdrawing:change', note, sha256, strokeCount,
  *     baseRev }                                                 내용 변경(저장 요청)
  *   { type:'handdrawing:export-result', requestId, format,
- *     dataUrl? | json?, error? }                                내보내기 응답
+ *     dataUrl? | dataUrls? | json?, error? }                    내보내기 응답
  *
  *  호스트 → 자식
  *   { type:'handdrawing:load', note:{title, strokes} | null,
  *     rev? }                                                    노트 데이터 주입
  *   { type:'handdrawing:ack-save', rev }                        저장 완료 통지(새 리비전)
  *   { type:'handdrawing:set-readonly', readonly:boolean }       열람 모드 전환
- *   { type:'handdrawing:export', requestId, format:'png'|'pdf'|'json' }
+ *   { type:'handdrawing:export', requestId,
+ *     format:'png'|'png-pages'|'pdf'|'json', aspect? }
+ *     png       : 전체를 한 장으로 (dataUrl)
+ *     png-pages : 페이지 단위로 나눈 여러 장 (dataUrls) — aspect(세로/가로)로 용지 비율 지정,
+ *                 생략 시 A4 본문 비율. 경계는 필기 없는 가로 여백에서 자른다
+ *     pdf       : A4 여러 페이지 PDF (dataUrl)
  *
  * 동시 편집 충돌 감지: 호스트가 load에 rev(저장본 리비전)를 실어 보내면 이후
  * 모든 change에 baseRev로 그대로 되돌아온다. 호스트는 저장 시 baseRev가 현재
@@ -68,7 +73,7 @@ const Bridge = (() => {
       case 'handdrawing:export': {
         let result;
         try {
-          result = await hooks.export(d.format);
+          result = await hooks.export(d.format, { aspect: d.aspect });
         } catch (err) {
           result = { error: err.message };
         }

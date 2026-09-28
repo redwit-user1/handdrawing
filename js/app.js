@@ -498,10 +498,10 @@
         const ok = engine.exportPNG(title);
         toast(ok ? 'PNG로 저장했습니다' : '내보낼 내용이 없습니다');
       } else {
-        const out = engine.renderExportCanvas();
-        if (!out) { toast('내보낼 내용이 없습니다'); return; }
-        downloadCanvasAsPDF(out, title + '.pdf');
-        toast('PDF로 저장했습니다');
+        const pages = engine.renderExportPages();
+        if (pages.length === 0) { toast('내보낼 내용이 없습니다'); return; }
+        downloadPagesAsPDF(pages, title + '.pdf');
+        toast(`PDF로 저장했습니다 (A4 ${pages.length}쪽)`);
       }
     }));
 
@@ -577,16 +577,27 @@
         $('#note-title').value = cur.title;
       },
       setReadonly,
-      async export(format) {
+      async export(format, opts = {}) {
         if (format === 'json') {
           const cur = currentNote();
           return { json: { title: cur.title, strokes: engine.strokes } };
         }
-        const out = engine.renderExportCanvas();
-        if (!out) return { error: '내보낼 내용이 없습니다' };
-        if (format === 'png') return { dataUrl: out.toDataURL('image/png') };
+        if (format === 'png-pages') {
+          // 호스트가 자기 용지의 본문 비율(세로/가로)을 넘기면 그에 맞춰 자른다
+          const aspect = Number(opts.aspect);
+          const pages = engine.renderExportPages(aspect > 0.3 && aspect < 5 ? aspect : undefined);
+          if (pages.length === 0) return { error: '내보낼 내용이 없습니다' };
+          return { dataUrls: pages.map(c => c.toDataURL('image/png')) };
+        }
+        if (format === 'png') {
+          const out = engine.renderExportCanvas();
+          if (!out) return { error: '내보낼 내용이 없습니다' };
+          return { dataUrl: out.toDataURL('image/png') };
+        }
         if (format === 'pdf') {
-          const blob = buildCanvasPDFBlob(out);
+          const pages = engine.renderExportPages();
+          if (pages.length === 0) return { error: '내보낼 내용이 없습니다' };
+          const blob = buildPagesPDFBlob(pages);
           const dataUrl = await new Promise((res, rej) => {
             const r = new FileReader();
             r.onload = () => res(r.result);

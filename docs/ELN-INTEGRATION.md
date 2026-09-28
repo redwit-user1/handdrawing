@@ -21,7 +21,7 @@
 
 | 시나리오 | 설명 | 공수 | 권장도 |
 | --- | --- | --- | --- |
-| **A1. 에디터 본문 블록** | editor-ai(NewEditor)의 커스텀 노드(`img[data-strokes]`) + iframe 편집 모달 — 노트 본문 안에 글·손글씨 혼합 | **구현 완료** (editor-ai SDK) | ★ **권장·적용됨** |
+| **A1. 에디터 본문 블록** | editor-ai(NewEditor)의 커스텀 노드(`figure[data-strokes]`) + iframe 편집 모달 — 노트 본문 안에 글·손글씨 혼합 | **구현 완료** (editor-ai SDK) | ★ **권장·적용됨** |
 | A2. 전면 iframe 페이지 | ELN에 별도 write mode 페이지를 만들어 손글씨 전용 노트로 사용 | ELN 쪽 페이지 + 저장 API | 손글씨 전용 노트 필요 시 |
 | B. 첨부파일 워크플로 | 에디터를 별도 페이지로 쓰고 PNG/PDF/JSON을 ELN에 첨부 | 거의 없음 (현재도 가능) | 임시 방편 |
 | C. 컴포넌트 이식 | 엔진(engine.js)을 ELN 프런트(React)에 네이티브 포팅 | 큼 (빌드 체계·상태 관리 통합) | 장기 검토 |
@@ -32,9 +32,18 @@ iframe 노드가 없어(파싱 시 드롭) 본문 임베드는 커스텀 노드�
 Ketcher 화학 구조식(`img[data-molfile]` + 재편집 모달)과 동일한 패턴이다.
 editor-ai에 `config.drawingEditorUrl` 옵션·`DrawingImage` 노드·`DrawingModal`
 (iframe + postMessage 호스트)이 추가되어, 본 에디터를 정적 자산으로 서빙하기만 하면
-본문에 손글씨 블록을 삽입·재편집할 수 있다. 삽입 결과는
-`<img src="data:image/png..." data-strokes="{…}" data-drawing-sha256="…">`로
-저장되어 노트 HTML → PDF 증적 경로에 이미지로 포함된다.
+본문에 손글씨 블록을 삽입·재편집할 수 있다. 삽입 결과는 용지 비율로 나뉜 페이지
+이미지들을 감싼 블록으로 저장되어 노트 HTML → PDF 증적 경로에 이미지로 포함된다:
+
+```html
+<figure class="rw-drawing" data-strokes="{…}" data-drawing-sha256="…">
+  <img src="/editor-inline-images/…p1.png?noteMno=…" style="display:block;width:100%;…">
+  <img src="/editor-inline-images/…p2.png?noteMno=…" style="…">
+</figure>
+```
+
+초기 버전 형식(`<img data-strokes src=…>` 한 장)도 그대로 읽히며, 재편집 후 삽입하면
+새 형식으로 바뀐다.
 
 ## 2. 에디터 쪽에 구현되어 있는 연계 인터페이스
 
@@ -58,7 +67,7 @@ editor-ai에 `config.drawingEditorUrl` 옵션·`DrawingImage` 노드·`DrawingMo
 | --- | --- | --- |
 | `handdrawing:ready` | `version` | 에디터 초기화 완료 (이후 `load`를 보낼 것) |
 | `handdrawing:change` | `note{title,strokes,updated}`, `sha256`, `strokeCount`, `baseRev` | 편집 후 400ms 디바운스 |
-| `handdrawing:export-result` | `requestId`, `format`, `dataUrl`(png/pdf) 또는 `json`, 실패 시 `error` | `export` 요청 응답 |
+| `handdrawing:export-result` | `requestId`, `format`, `dataUrl`(png/pdf) · `dataUrls`(png-pages) · `json` 중 하나, 실패 시 `error` | `export` 요청 응답 |
 
 ELN → 에디터:
 
@@ -67,12 +76,26 @@ ELN → 에디터:
 | `handdrawing:load` | `note{title,strokes}` 또는 `null`(새 노트), `rev`(선택) | 저장된 노트 주입 |
 | `handdrawing:ack-save` | `rev` | 저장 성공 통지 — 이후 `change.baseRev` 갱신 |
 | `handdrawing:set-readonly` | `readonly: boolean` | 열람/편집 전환 |
-| `handdrawing:export` | `requestId`, `format: 'png'\|'pdf'\|'json'` | 렌더링 결과 요청 |
+| `handdrawing:export` | `requestId`, `format: 'png'\|'png-pages'\|'pdf'\|'json'`, `aspect`(png-pages, 선택) | 렌더링 결과 요청 |
 
 **동시 편집 충돌 감지**: `load`에 저장본 리비전 `rev`를 실어 보내면 이후 모든
 `change`에 `baseRev`로 되돌아온다. ELN 서버는 저장 시 `baseRev ≠ 현재 리비전`이면
 충돌(다른 세션이 먼저 저장)로 처리하고, 저장 성공 시 `ack-save`로 새 리비전을
 내려 다음 변경부터 갱신된 `baseRev`가 실리게 한다.
+
+내보내기 형식:
+
+| format | 결과 | 용도 |
+| --- | --- | --- |
+| `png` | 전체를 한 장 (`dataUrl`) | 미리보기·썸네일 |
+| `png-pages` | 페이지 단위로 나눈 여러 장 (`dataUrls`) | **연구노트 본문 삽입(권장)** — `aspect`(세로/가로)로 호스트 용지 본문 비율 지정, 생략 시 A4 본문 비율 |
+| `pdf` | A4 여러 페이지 PDF (`dataUrl`) | 단독 증빙 파일 |
+| `json` | 획 원본 `{title, strokes}` | 저장·재편집 |
+
+페이지 경계는 각 페이지 아래쪽 25% 안에서 **필기가 없는 가로 여백**을 찾아 자르므로
+글씨가 두 페이지에 걸쳐 잘리지 않는다(여백이 없을 만큼 빽빽하면 그 자리에서 자름).
+페이지마다 따로 렌더해 해상도도 유지된다 — 한 장으로 내보내면 긴 변 4096px 제한 때문에
+세로로 긴 노트일수록 전체 해상도가 떨어진다.
 
 동작하는 호스트 예시: [`examples/eln-host-demo.html`](../examples/eln-host-demo.html)
 
@@ -131,19 +154,30 @@ ELN → 에디터:
 - **저장/버전 보존** — 블록이 노트 HTML에 포함되므로 기존
   `/api/eln/note/editor/saveEditor`가 그대로 처리한다. 저장마다 새 HTML 파일 +
   에디터 이력 행을 만드는 기존 구조가 "덮어쓰기 금지·버전 체인" 요건을 충족.
-- **PDF 증적 포함** — 손글씨가 렌더된 PNG `<img>`로 본문에 존재하므로 기존
-  노트 → Synap PDF 변환 → Amano TSA 경로에 자동 포함된다.
+- **PDF 증적 포함** — 손글씨가 페이지 단위 PNG `<img>`로 본문에 존재하므로 기존
+  노트 → Synap PDF 변환 → Amano TSA 경로에 포함된다. 긴 필기도 쪽마다 한 장씩
+  A4 페이지에 맞춰 들어간다 (아래 1번의 변환 사본 처리와 함께 동작).
 - **프레이밍 보안** — 같은 오리진 서빙(`/lib/handdrawing/`) +
   `X-Frame-Options: sameOrigin` + `embedAllowedOrigins` 기본값(동일 오리진)이
   그대로 맞물린다. 추가 설정 불요.
 
 **남은 확인/개선 사항 (우선순위순)**:
 
-1. **Synap 변환기의 `data:` URL 렌더 검증** — 손글씨 PNG는 data URL로 본문에
-   저장된다. Synap 서버가 HTML 변환 시 data URL 이미지를 렌더하는지 실환경
-   검증 필요 (기존 화학 구조식 SVG data URL도 동일 조건이므로 함께 확인).
-   미지원이면 저장 시 data URL을 인라인 이미지 파일 경로로 치환하는 처리를
-   `createNoteEditorDtl`의 Jsoup 단계에 추가하면 된다.
+1. ~~Synap 변환 시 본문 이미지 누락~~ — **수정됨, 실 Synap 1회 확인 필요**:
+   저장된 노트 HTML의 이미지 주소는 `/editor-inline-images/…?noteMno=…`(호스트 없는
+   경로 + 로그인 세션 필요)인데 Synap은 HTML을 **로컬 파일 경로**로 받아 변환한다.
+   파일 기반 변환에서는 이 주소를 해석할 기준도 세션도 없어 이미지가 빠진다 —
+   Chromium으로 같은 조건을 재현하면 이미지 0/3 로드. 이는 손글씨뿐 아니라 **기존
+   웹에디터 본문 이미지 전체**에 해당하는 문제였다.
+   Goono-ELN `SynapViewerService.getSynapParam`(시점인증 스케줄러·미리보기 공통 경로)이
+   이제 HTML이면 이미지를 디스크에서 읽어 **data URI로 내장한 변환용 사본**을 만들어
+   Synap에 넘긴다 (`EditorHtmlImageInliner`, 원본 HTML은 그대로). 손글씨 블록이 있으면
+   구형 변환기용 페이지 나눔 규칙(`page-break-inside`)도 `<style>`로 넣는다. 재현
+   조건에서 이미지 3/3 로드, A4 3쪽에 쪽마다 한 장.
+   **남은 확인**: 실제 Synap이 data URI 이미지를 렌더하는지 한 번 확인할 것
+   (점검완료 노트 1건의 시점인증 PDF에 이미지가 나오는지). 안 나오면
+   `synap.properties`의 `synap.editor.inline.image.mode=file`(같은 파일시스템일 때,
+   `file://` 절대경로)로 바꾸고, 문제가 생기면 `none`으로 기존 동작 복귀.
 2. ~~PNG를 파일 업로드 경로로 전환~~ — **완료**: editor-ai `insertDrawing`이
    호스트 `onImageUpload`가 있으면 PNG를 파일로 업로드해(ELN에서는 blob: URL →
    저장 시 인라인 이미지 파일) 본문 HTML 크기를 줄인다. 업로드 실패 시 data URL
@@ -173,10 +207,13 @@ ELN → 에디터:
 
 - ✅ **editor-ai(NewEditor) 본문 블록 통합**: `DrawingImage` 노드 +
   `DrawingModal`(iframe postMessage 호스트) + `config.drawingEditorUrl` 옵션.
-  삽입 시 json export(디바운스 무관 최신 획) + png export를 받아
-  `img[data-strokes][data-drawing-sha256]`로 본문에 저장, 더블클릭 재편집.
+  삽입 시 json export(디바운스 무관 최신 획) + png-pages export(에디터 용지 본문
+  비율 × 0.95)를 받아 `figure[data-strokes][data-drawing-sha256]` 안에 페이지
+  이미지들로 저장, 더블클릭 재편집.
   구축형 구노에는 standalone 번들 교체 + 정적 자산(`/lib/handdrawing/`) 배치로
   적용됨.
+- ✅ **A4 페이지 분할 내보내기**: `png-pages` 형식과 A4 여러 페이지 PDF.
+  필기 없는 가로 여백에서 자르고, 페이지별 렌더로 해상도 유지 (§2.2).
 - ✅ **동시 편집 충돌 감지**: `rev`/`baseRev`/`ack-save` 프로토콜 구현 (§2.2).
   서버 쪽 충돌 판정·잠금 정책은 ELN 몫.
 - ✅ **이미지 삽입**: 파일 선택·클립보드 붙여넣기로 실험 사진을 노트에 넣고
