@@ -198,6 +198,27 @@ ELN → 에디터:
    `frame-src`(CSP 도입 시)에 에디터 오리진 추가 + `embedAllowedOrigins`에
    ELN 오리진 명시(양방향 화이트리스트).
 
+**Synap 대체 변환 서버(pdf-viewer-server) 호환성** — `redwit-dev/PDF`
+`claude/pdf-viewer-replacement-f4ubgl` 기준으로 점검(2026-09-28):
+
+- 새 서버는 Synap과 같은 `file{i}_type=Local` 계약으로 받은 `.html`을 Gotenberg
+  **LibreOffice** 경로로 변환한다(Chromium은 URL로 받은 HTML에만 사용).
+- 저장본 HTML을 그대로 넘기면 LibreOffice에서도 본문 이미지가 **0개** — Synap 때의
+  누락이 새 서버에도 그대로 있다. 변환 사본(이미지 내장)이 필요하다.
+- LibreOffice는 CSS `width:100%`를 무시하고 HTML `width`/`height` 속성만 따라, 속성이
+  없으면 쪽 이미지가 원래 픽셀 크기로 놓여 잘린다. 변환 사본이 이미지 실제 크기로 계산한
+  `width="620" height="…"`를 넣도록 수정해 LibreOffice·Chromium 모두 A4 3쪽 정상.
+- 변환 시간 1.6~2.1초(구노 10초 소켓 타임아웃 이내), 사본 3.2MB(한도 100MB), 사본
+  경로는 파일 저장소 루트 아래라 허용 루트 안.
+- `synap.editor.inline.image.mode=file`은 새 서버에서 쓸 수 없다(Gotenberg에는 파일
+  내용만 전달). 기본값 `data` 유지.
+- Goono-ELN 병합: `SynapViewerService.java` 한 곳 충돌(양쪽이 인접 위치에 추가,
+  둘 다 유지하면 됨). 인라인 이미지 권한·보안 설정은 자동 병합.
+- pdf-viewer(뷰어) 결함 2건 발견 — 손글씨와 무관, 그쪽 브랜치에서 수정 필요:
+  ① pdf.js 6.3에서 없어진 `PDFDocumentProxy.destroy()`를 호출해 문서 교체·닫기마다
+  오류와 누수(한 번 걸러 빈 화면), ② 첫 문서를 여는 도중 교체하면 이전 문서 쪽이 섞임.
+  수정안(`loadingTask.destroy()` + 렌더별 쪽 묶음)으로 그쪽 테스트 0 실패·뷰어 검증 PASS.
+
 **A2(전면 iframe 페이지)로 확장할 경우에만** 저장 API·손글씨 전용 write mode가
 추가로 필요하며, 그때는 400ms `change`마다 저장하지 말고 ELN의 기존 autosave
 주기(분 단위)·수동 저장에 맞춰 **호스트가 버퍼링**해야 한다 (저장 1회 = 파일
