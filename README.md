@@ -25,6 +25,13 @@ HTTPS/localhost 환경에서는 PWA로 설치해 전체 화면 앱처럼 사용�
 [docs/ELN-INTEGRATION.md](docs/ELN-INTEGRATION.md)와
 [examples/eln-host-demo.html](examples/eln-host-demo.html) 참고.
 
+## 태블릿 앱 (오프라인 작성 → 구노 동기화)
+
+연구 현장(실험실·클린룸 등)은 오프라인인 경우가 많아, 태블릿에서 오프라인으로 연구노트를 쓰고
+연결될 때 구노 ELN으로 올리는 앱을 [`app/`](app/README.md)에 둡니다 (Capacitor, iPad·갤럭시 탭).
+편집기는 웹 구노와 같은 editor-ai + 이 저장소의 손글씨 편집기를 앱에 내장합니다.
+동기화 계약: [app/docs/SYNC-API.md](app/docs/SYNC-API.md).
+
 ## 온프레미스(사내망) 배포
 
 이 앱은 온프레미스 배포를 전제로 설계되어 있습니다.

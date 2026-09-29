@@ -1,0 +1,12 @@
+node_modules/
+dist/
+public/vendor/
+public/handdrawing/
+mock-server/.data/
+tests/e2e/out/
+android/app/build/
+android/.gradle/
+android/build/
+ios/App/Pods/
+ios/DerivedData/
+dist-apk/

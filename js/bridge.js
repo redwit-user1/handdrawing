@@ -50,12 +50,15 @@ const Bridge = (() => {
   function post(msg) {
     if (!isEmbedded()) return;
     // 호스트 오리진을 알기 전(ready)에는 '*'로 보내되, 그 메시지에는 노트 데이터를 담지 않는다
-    window.parent.postMessage(msg, hostOrigin || '*');
+    // 앱 웹뷰의 사용자 정의 스킴(capacitor://)은 오리진이 'null'로 보일 수 있어 그때는 '*'로 보낸다
+    // (받는 쪽은 항상 window.parent — 아래 onMessage에서 부모가 보낸 메시지만 받는다)
+    window.parent.postMessage(msg, hostOrigin && hostOrigin !== 'null' ? hostOrigin : '*');
   }
 
   async function onMessage(e) {
     const d = e.data;
     if (!d || typeof d.type !== 'string' || !d.type.startsWith('handdrawing:')) return;
+    if (e.source !== window.parent) return;
     if (!originAllowed(e.origin)) return;
     hostOrigin = e.origin;
 
