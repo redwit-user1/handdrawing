@@ -2,8 +2,9 @@ import { useEffect, type ReactNode } from 'react';
 import { sync, useApp, type NoteCounts } from './lib/store.ts';
 import { deadlineLabel, relativeTime, sessionLock, LOCK_MESSAGES } from './lib/rules.ts';
 import type { LocalNote } from './lib/types.ts';
+import { IcLock, IcSync } from './icons.tsx';
 
-export function Dialog({ title, children, onClose, testId }: { title: string; children: ReactNode; onClose: () => void; testId?: string }) {
+export function Dialog({ title, children, onClose, testId, wide }: { title: string; children: ReactNode; onClose: () => void; testId?: string; wide?: boolean }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
@@ -11,7 +12,7 @@ export function Dialog({ title, children, onClose, testId }: { title: string; ch
   }, [onClose]);
   return (
     <div className="dialog-backdrop" onClick={onClose}>
-      <div className="dialog" role="dialog" aria-label={title} data-testid={testId} onClick={(e) => e.stopPropagation()}>
+      <div className={`dialog${wide ? ' wide' : ''}`} role="dialog" aria-modal="true" aria-label={title} data-testid={testId} onClick={(e) => e.stopPropagation()}>
         <h2>{title}</h2>
         {children}
       </div>
@@ -27,11 +28,11 @@ export function SyncBar() {
   const lock = sessionLock(session, now);
   const deadline = deadlineLabel(session.tokenExpiresAt, now);
   return (
-    <div className="syncbar" data-testid="syncbar">
+    <div className="syncbar" data-testid="syncbar" data-online={online} data-pending={pending}>
       <span className={`dot ${online ? 'on' : 'off'}`} />
       <span data-testid="net-state">{online ? '온라인' : '오프라인'}</span>
       <span className="sep" />
-      <span data-testid="pending-count">{pending ? `올릴 기록 ${pending}건` : '모두 올림'}</span>
+      <span data-testid="pending-count">{pending ? `올릴 버전 ${pending}개` : '모두 올림'}</span>
       <span className="sep" />
       <span>마지막 동기화 {relativeTime(session.lastSyncAt, now)}</span>
       <span className="sep" />
@@ -40,7 +41,7 @@ export function SyncBar() {
         <span className="warn" data-testid="sync-error">· {lastResult.error}</span>
       )}
       <button className="btn small" disabled={!online || syncing || lock === 'REVOKED' || lock === 'NEEDS_LOGIN'} onClick={() => void sync()} data-testid="sync-now">
-        {syncing ? '동기화 중…' : '지금 동기화'}
+        <IcSync /> {syncing ? '동기화 중…' : '지금 동기화'}
       </button>
     </div>
   );
@@ -53,7 +54,7 @@ export function LockBanner({ onRelogin }: { onRelogin?: () => void }) {
   if (!lock) return null;
   return (
     <div className="banner danger" data-testid="lock-banner" data-lock={lock}>
-      {LOCK_MESSAGES[lock]}
+      <IcLock /> <span className="grow">{LOCK_MESSAGES[lock]}</span>
       {lock === 'NEEDS_LOGIN' && onRelogin && <button className="btn small" onClick={onRelogin}>다시 로그인</button>}
     </div>
   );
@@ -73,8 +74,7 @@ export function noteChips(n: LocalNote, c: NoteCounts | undefined): Chip[] {
   else chips.push({ label: '이 기기에서 작성 중', tone: 'ok' });
 
   if (n.noteMno == null) chips.push({ label: '서버 미등록', tone: 'muted' });
-  if (c?.pending) chips.push({ label: `올릴 기록 ${c.pending}`, tone: 'warn' });
-  if (n.workingDirty) chips.push({ label: '저장 안 된 변경', tone: 'muted' });
+  if (c?.pending) chips.push({ label: `올릴 버전 ${c.pending}`, tone: 'warn' });
   if (c?.rejected) chips.push({ label: `미반영 ${c.rejected}`, tone: 'danger' });
   return chips;
 }

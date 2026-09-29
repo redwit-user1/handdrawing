@@ -1,33 +1,37 @@
 import { useState } from 'react';
-import { createNote } from '../lib/notes.ts';
+import { createNote, defaultTitle } from '../lib/notes.ts';
 import { logout } from '../lib/session.ts';
 import { reload, sync, useApp } from '../lib/store.ts';
 import { relativeTime, sessionLock } from '../lib/rules.ts';
 import type { Project } from '../lib/types.ts';
+import { IcPen, IcPlus } from '../icons.tsx';
 import { Chips, Dialog, LockBanner, noteChips, SyncBar } from '../ui.tsx';
 
-export function NewNoteDialog({ onClose, onCreated, initialTitle = '', create = createNote, heading = '새 연구노트' }: {
+const LAST_PROJECT = 'goono-note.last-project';
+
+/** 프로젝트를 고르고 바로 쓰기 시작 — 제목은 날짜로 채워 두고 나중에 고친다 */
+export function NewNoteDialog({ onClose, onCreated, initialTitle, create = createNote, heading = '새 노트', submitLabel = '쓰기 시작' }: {
   onClose: () => void;
   onCreated: (id: string) => void;
   initialTitle?: string;
   create?: (p: Project, title: string) => Promise<{ id: string }>;
   heading?: string;
+  submitLabel?: string;
 }) {
   const { meta } = useApp();
   const projects = (meta?.projects ?? []).filter((p) => p.writable);
-  const [projectMno, setProjectMno] = useState<number | ''>(projects[0]?.projectMno ?? '');
-  const [title, setTitle] = useState(initialTitle);
+  const last = Number(localStorage.getItem(LAST_PROJECT));
+  const [projectMno, setProjectMno] = useState<number | null>(projects.some((p) => p.projectMno === last) ? last : null);
+  const [title, setTitle] = useState(initialTitle ?? '');
   const [busy, setBusy] = useState(false);
-
-  // 대화상자를 연 뒤에 프로젝트 목록이 도착할 수 있다 — 고른 게 없으면 첫 프로젝트
-  const selected = projects.find((x) => x.projectMno === projectMno) ?? projects[0];
+  const selected = projects.find((p) => p.projectMno === projectMno) ?? projects[0];
 
   const submit = async () => {
-    const p = selected;
-    if (!p) return;
+    if (!selected) return;
     setBusy(true);
     try {
-      const n = await create(p, title);
+      localStorage.setItem(LAST_PROJECT, String(selected.projectMno));
+      const n = await create(selected, title);
       await reload();
       void sync();
       onCreated(n.id);
@@ -39,35 +43,53 @@ export function NewNoteDialog({ onClose, onCreated, initialTitle = '', create = 
   return (
     <Dialog title={heading} onClose={onClose} testId="new-note-dialog">
       {!projects.length ? (
-        <p className="muted">작성 가능한 프로젝트가 없습니다. 인터넷에 연결해 한 번 동기화하면 프로젝트 목록을 받아 옵니다.</p>
+        <p className="muted">쓸 수 있는 프로젝트가 없습니다. 인터넷에 연결해 한 번 동기화하면 프로젝트 목록을 받아 옵니다.</p>
       ) : (
         <>
-          <label>프로젝트
-            <select value={selected?.projectMno ?? ''} onChange={(e) => setProjectMno(Number(e.target.value))} data-testid="new-note-project">
-              {projects.map((p) => <option key={p.projectMno} value={p.projectMno}>{p.name}</option>)}
-            </select>
+          <fieldset className="project-pick">
+            <legend>프로젝트</legend>
+            {projects.map((p) => (
+              <label key={p.projectMno} className={`project-opt${selected?.projectMno === p.projectMno ? ' active' : ''}`}>
+                <input type="radio" name="project" checked={selected?.projectMno === p.projectMno} onChange={() => setProjectMno(p.projectMno)} data-testid="new-note-project" value={p.projectMno} />
+                <span>{p.name}</span>
+              </label>
+            ))}
+          </fieldset>
+          <label className="field">제목 <span className="muted small">비워 두면 "{defaultTitle()}"</span>
+            <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder={defaultTitle()} data-testid="new-note-title" />
           </label>
-          <label>제목
-            <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="예: 시료 A 600℃ 열처리 1차" data-testid="new-note-title" autoFocus />
-          </label>
-          <p className="muted small">노트는 이 기기에서 작성하고, 연결될 때 구노에 올라갑니다. 구노 웹에서는 작성 완료 전까지 읽기 전용입니다.</p>
         </>
       )}
       <div className="row end">
         <button className="btn" onClick={onClose}>취소</button>
-        <button className="btn primary" disabled={busy || !projects.length || !title.trim()} onClick={() => void submit()} data-testid="new-note-create">만들기</button>
+        <button className="btn primary" disabled={busy || !projects.length} onClick={() => void submit()} data-testid="new-note-create">
+          <IcPen /> {submitLabel}
+        </button>
       </div>
     </Dialog>
   );
 }
 
 export default function Notes({ onOpen, onRelogin, onLoggedOut }: { onOpen: (id: string) => void; onRelogin: () => void; onLoggedOut: () => void }) {
-  const { session, notes, counts, now } = useApp();
+  const { session, meta, notes, counts, now } = useApp();
   const [creating, setCreating] = useState(false);
   const [menu, setMenu] = useState(false);
   const [error, setError] = useState('');
   if (!session) return null;
   const lock = sessionLock(session, now);
+  const writable = (meta?.projects ?? []).filter((p) => p.writable);
+
+  const startNew = async () => {
+    // 쓸 수 있는 프로젝트가 하나뿐이면 묻지 않고 바로 연다
+    if (writable.length === 1) {
+      const n = await createNote(writable[0]);
+      await reload();
+      void sync();
+      onOpen(n.id);
+      return;
+    }
+    setCreating(true);
+  };
 
   const doLogout = async () => {
     setMenu(false);
@@ -83,37 +105,47 @@ export default function Notes({ onOpen, onRelogin, onLoggedOut }: { onOpen: (id:
   return (
     <div className="screen">
       <header className="topbar">
-        <h1>구노 연구노트</h1>
+        <h1>연구노트</h1>
         <span className="grow" />
-        <button className="btn ghost" onClick={() => setMenu((v) => !v)} data-testid="user-menu">{session.user.name} · {session.deviceName} ▾</button>
-        {menu && (
-          <div className="menu" onMouseLeave={() => setMenu(false)}>
-            <div className="muted small">{session.serverUrl}</div>
-            <button className="btn ghost" onClick={() => void doLogout()} data-testid="logout">로그아웃</button>
-          </div>
-        )}
+        <div className="pal-anchor">
+          <button className="btn ghost" onClick={() => setMenu((v) => !v)} aria-expanded={menu} data-testid="user-menu">{session.user.name} · {session.deviceName}</button>
+          {menu && (
+            <div className="user-menu" role="menu">
+              <div className="muted small">{session.serverUrl}</div>
+              <button className="btn ghost block" role="menuitem" onClick={() => void doLogout()} data-testid="logout">로그아웃</button>
+            </div>
+          )}
+        </div>
+        <button className="btn primary" disabled={!!lock} onClick={() => void startNew()} data-testid="new-note"><IcPlus /> 새 노트</button>
       </header>
       <SyncBar />
       <LockBanner onRelogin={onRelogin} />
-      {error && <div className="banner danger" onClick={() => setError('')}>{error}</div>}
-      <main className="notes">
-        <div className="row">
-          <h2 className="grow">노트</h2>
-          <button className="btn primary" disabled={!!lock} onClick={() => setCreating(true)} data-testid="new-note">+ 새 노트</button>
-        </div>
-        {!notes.length && <p className="muted empty">아직 노트가 없습니다. 새 노트를 만들어 손글씨나 글로 기록하세요.</p>}
-        <ul className="note-list" data-testid="note-list">
-          {notes.map((n) => (
-            <li key={n.id}>
-              <button className="note-card" onClick={() => onOpen(n.id)} data-testid="note-card" data-note-id={n.id}>
-                <div className="note-title">{n.title}</div>
-                <div className="muted small">{n.projectName}{n.noteMno != null ? ` · #${n.noteMno}` : ''} · 수정 {relativeTime(n.updatedAt, now)}</div>
-                <Chips chips={noteChips(n, counts[n.id])} />
-                {n.syncIssue && <div className="warn small">{n.syncIssue.message}</div>}
-              </button>
-            </li>
-          ))}
-        </ul>
+      {error && <div className="banner danger" role="alert" onClick={() => setError('')}>{error}</div>}
+      <main className="shelf">
+        {!notes.length ? (
+          <div className="empty" data-testid="empty">
+            <div className="empty-page" aria-hidden="true"><IcPen /></div>
+            <h2>첫 노트를 펜으로 시작하세요</h2>
+            <p className="muted">새 노트를 만들면 모눈 페이지가 열리고 바로 쓸 수 있습니다. 인터넷이 없어도 됩니다.<br />연결되면 구노 전자연구노트에 올라갑니다.</p>
+            <button className="btn primary" disabled={!!lock} onClick={() => void startNew()}><IcPlus /> 새 노트</button>
+          </div>
+        ) : (
+          <ul className="note-grid" data-testid="note-list">
+            {notes.map((n) => (
+              <li key={n.id}>
+                <button className="note-card" onClick={() => onOpen(n.id)} data-testid="note-card" data-note-id={n.id}>
+                  <div className="thumb">{n.thumb ? <img src={n.thumb} alt="" /> : <span className="thumb-empty" />}</div>
+                  <div className="note-card-body">
+                    <div className="note-card-title">{n.title}</div>
+                    <div className="muted small">{n.projectName} · {relativeTime(n.updatedAt, now)}</div>
+                    <Chips chips={noteChips(n, counts[n.id])} />
+                    {n.syncIssue && <div className="small warn-text">{n.syncIssue.message}</div>}
+                  </div>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
       </main>
       {creating && <NewNoteDialog onClose={() => setCreating(false)} onCreated={(id) => { setCreating(false); onOpen(id); }} />}
     </div>

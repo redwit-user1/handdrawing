@@ -56,6 +56,7 @@
     const note = currentNote();
     if (!note) return;
     note.strokes = engine.strokes;
+    if (engine.layout) note.layout = engine.layout; else delete note.layout;
     note.updated = Date.now();
     if (EMBED) { Bridge.sendChange(note); return; }
     if (!Store.save(state)) toast('저장 공간이 부족합니다');
@@ -251,6 +252,7 @@
     $$('#tool-group .tool').forEach(b =>
       b.setAttribute('aria-pressed', String(b.dataset.tool === tool)));
     canvas.classList.toggle('tool-pan', tool === 'pan');
+    canvas.classList.toggle('tool-text', tool === 'text');
     engine.requestRender();
   }
   $$('#tool-group .tool').forEach(b => {
@@ -514,7 +516,8 @@
 
   /* ============== 키보드 단축키 ============== */
   document.addEventListener('keydown', e => {
-    if (e.target.tagName === 'INPUT') return;
+    // 입력칸·글상자에서 치는 글자는 단축키가 아니다
+    if (e.target.closest && e.target.closest('input, textarea, [contenteditable="true"]')) return;
     const mod = e.ctrlKey || e.metaKey;
     if (mod && e.key.toLowerCase() === 'z' && !e.shiftKey) { e.preventDefault(); engine.undo(); }
     else if (mod && (e.key.toLowerCase() === 'y' || (e.key.toLowerCase() === 'z' && e.shiftKey))) { e.preventDefault(); engine.redo(); }
@@ -523,6 +526,7 @@
     else if (!mod && e.key === 'e') setTool('eraser');
     else if (!mod && e.key === 's') setTool('shape');
     else if (!mod && e.key === 'l') setTool('lasso');
+    else if (!mod && e.key === 't') setTool('text');
     else if ((e.key === 'Delete' || e.key === 'Backspace') && engine.selection) {
       e.preventDefault(); engine.deleteSelection();
     }
@@ -572,15 +576,22 @@
         if (noteData) {
           cur.title = noteData.title || cur.title;
           cur.strokes = Array.isArray(noteData.strokes) ? noteData.strokes : [];
+          // 태블릿 앱에서 쓴 페이지 노트는 페이지 모드 그대로 연다
+          if (noteData.layout) cur.layout = noteData.layout; else delete cur.layout;
         }
+        engine.title = cur.title;
         engine.setStrokes(cur.strokes);
+        engine.setLayout(cur.layout || null);
         $('#note-title').value = cur.title;
       },
       setReadonly,
       async export(format, opts = {}) {
+        engine.commitText(); // 편집 중인 글상자 확정
         if (format === 'json') {
           const cur = currentNote();
-          return { json: { title: cur.title, strokes: engine.strokes } };
+          const json = { title: cur.title, strokes: engine.strokes };
+          if (engine.layout) json.layout = engine.layout;
+          return { json };
         }
         if (format === 'png-pages') {
           // 호스트가 자기 용지의 본문 비율(세로/가로)을 넘기면 그에 맞춰 자른다

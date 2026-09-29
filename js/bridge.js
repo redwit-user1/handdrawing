@@ -104,10 +104,12 @@ const Bridge = (() => {
 
   async function sendChange(note) {
     if (!isEmbedded()) return;
-    const canonical = JSON.stringify({ title: note.title, strokes: note.strokes });
+    const body = { title: note.title, strokes: note.strokes };
+    if (note.layout) body.layout = note.layout;
+    const canonical = JSON.stringify(body);
     post({
       type: 'handdrawing:change',
-      note: { title: note.title, strokes: note.strokes, updated: note.updated },
+      note: Object.assign({}, body, { updated: note.updated }),
       sha256: await sha256(canonical),
       strokeCount: note.strokes.length,
       baseRev: currentRev,

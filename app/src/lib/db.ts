@@ -1,6 +1,7 @@
 import { storage } from './storage.ts';
 import { uuid } from './crypto.ts';
 import type { ImageMeta, LocalNote, LocalVersion, Meta, Session } from './types.ts';
+import type { NotebookDoc } from '../notebook/engine.ts';
 
 /**
  * 기기 저장소 구성 (모두 암호화):
@@ -23,7 +24,8 @@ const F = {
   image: (ref: string) => `images/${ref}.bin`,
 };
 
-export interface WorkingCopy { html: string; savedAt: string }
+/** 작업본 — 손글씨 노트 원본(획 JSON). 서버로는 버전으로 렌더돼 올라간다 */
+export interface WorkingCopy { doc: NotebookDoc; savedAt: string }
 
 export const db = {
   getSession: () => storage.getJSON<Session>(F.session),

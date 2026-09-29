@@ -26,7 +26,7 @@ export interface Bootstrap {
 }
 export interface DeviceInfo { id: string; name: string; platform: string; model: string; appVersion: string }
 export interface VersionUpload {
-  meta: { clientVersionId: string; baseVersionId: number | null; deviceWrittenAt: string; contentHash: string; autoSave: boolean };
+  meta: { clientVersionId: string; baseVersionId: number | null; deviceWrittenAt: string; contentHash: string; autoSave: boolean; title?: string };
   noteContent: string;
   images: { src: string; bytes: Uint8Array; mime: string }[];
 }

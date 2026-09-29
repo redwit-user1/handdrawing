@@ -146,7 +146,7 @@ async function syncNote(session: Session, note: LocalNote): Promise<{ sent: numb
     }
     try {
       const r = await api.uploadVersion(serverUrl, token, noteMno, {
-        meta: { clientVersionId: v.id, baseVersionId: base, deviceWrittenAt: v.deviceWrittenAt, contentHash: v.contentHash, autoSave: v.autoSave },
+        meta: { clientVersionId: v.id, baseVersionId: base, deviceWrittenAt: v.deviceWrittenAt, contentHash: v.contentHash, autoSave: v.autoSave, title: v.title },
         noteContent: payload.html,
         images: payload.images,
       });

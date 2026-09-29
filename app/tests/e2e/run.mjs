@@ -104,61 +104,86 @@ page.on('pageerror', (e) => consoleErrors.push(String(e)));
 page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()); });
 
 const tid = (id) => page.locator(`[data-testid="${id}"]`);
-const editor = () => page.locator('.editor-host .ProseMirror').first();
+/** 온라인 표시 — 목록 화면은 동기화 막대, 노트 화면은 상태 알약 */
+const netEl = () => page.locator('[data-testid="status-pill"], [data-testid="syncbar"]').first();
 const setOffline = async (v) => {
   await context.setOffline(v);
-  await until(async () => (await tid('net-state').textContent()) === (v ? '오프라인' : '온라인'), `네트워크 표시 ${v ? '오프라인' : '온라인'}`);
+  await until(async () => (await netEl().getAttribute('data-online')) === String(!v), `네트워크 표시 ${v ? '오프라인' : '온라인'}`);
 };
-const waitAllSent = () => until(async () => (await tid('pending-count').textContent()) === '모두 올림', '올릴 기록 없음', 20_000);
+const pendingCount = async () => Number(await netEl().getAttribute('data-pending'));
+const waitAllSent = () => until(async () => (await pendingCount()) === 0, '올릴 버전 없음', 20_000);
 const noteByTitle = async (title) => (await serverState()).notes.find((n) => n.title === title);
 const toast = async (re) => {
   let seen = '';
   return until(async () => { const t = await tid('toast').textContent({ timeout: 500 }).catch(() => ''); if (t) seen = t; return re.test(t) && t; }, `알림 ${re}`)
     .catch((e) => { throw new Error(`${e.message} — 마지막 알림: "${seen}"`); });
 };
+const lockOf = async () => tid('lock-banner').getAttribute('data-lock', { timeout: 300 }).catch(() => '');
+const blockOf = async () => tid('block-banner').getAttribute('data-kind', { timeout: 300 }).catch(() => '');
+const paletteVisible = async () => (await tid('palette').count()) > 0;
 
-async function createNote(title) {
-  await tid('new-note').click();
-  await tid('new-note-title').fill(title);
+/** 첫 페이지 안쪽 좌표 (페이지는 캔버스 가운데에 놓인다) */
+async function pagePoint(x, y) {
+  const b = await tid('board').boundingBox();
+  return [b.x + b.width * 0.34 + x, b.y + 140 + y];
+}
+async function newNote(title) {
+  await tid('new-note').first().click();
+  // 쓸 수 있는 프로젝트가 둘이라 프로젝트를 고르는 대화상자가 뜬다 (제목은 비워 두면 날짜)
+  await tid('new-note-dialog').waitFor();
+  if (title) await tid('new-note-title').fill(title);
   await tid('new-note-create').click();
-  await editor().waitFor({ timeout: 20_000 });
+  await tid('board').waitFor();
+  await tid('palette').waitFor();
 }
-async function typeInEditor(text) {
-  await editor().click();
-  await page.keyboard.press('End');
-  await page.keyboard.press('Control+End');
-  await page.keyboard.type(text);
-  await until(async () => /기기에 저장됨/.test(await tid('saved-state').textContent()), '작업본 저장');
-}
-async function drawInModal() {
-  await page.locator('button[title^="손글씨"]').first().click();
-  const frameEl = await page.locator('iframe').first().elementHandle();
-  const frame = await frameEl.contentFrame();
-  await frame.locator('#board').waitFor();
-  await until(async () => page.getByRole('button', { name: '본문에 삽입' }).isEnabled(), '손글씨 편집기 준비');
-  const box = await frame.locator('#board').boundingBox();
-  // "Hi" 비슷한 획 세 개 (펜 대신 마우스 포인터)
-  const strokes = [
-    [[0.2, 0.2], [0.2, 0.45]],
-    [[0.2, 0.32], [0.3, 0.32]],
-    [[0.3, 0.2], [0.3, 0.45]],
-    [[0.38, 0.28], [0.38, 0.45]],
-  ];
-  for (const s of strokes) {
-    await page.mouse.move(box.x + box.width * s[0][0], box.y + box.height * s[0][1]);
+/** 펜으로 획 몇 개 (마우스 포인터 = 펜처럼 바로 그려진다) */
+async function drawStrokes(dy = 0) {
+  await tid('tool-pen').click();
+  const lines = [[[0, 0], [0, 60]], [[0, 30], [30, 30]], [[30, 0], [30, 60]], [[50, 20], [50, 60]], [[90, 10], [170, 50]], [[90, 50], [170, 10]]];
+  for (const [a0, b0] of lines) {
+    const a = await pagePoint(a0[0], a0[1] + dy), b = await pagePoint(b0[0], b0[1] + dy);
+    await page.mouse.move(a[0], a[1]);
     await page.mouse.down();
-    for (let i = 1; i <= 12; i++) {
-      const t = i / 12;
-      await page.mouse.move(box.x + box.width * (s[0][0] + (s[1][0] - s[0][0]) * t), box.y + box.height * (s[0][1] + (s[1][1] - s[0][1]) * t));
-    }
+    for (let i = 1; i <= 10; i++) await page.mouse.move(a[0] + (b[0] - a[0]) * i / 10, a[1] + (b[1] - a[1]) * i / 10);
     await page.mouse.up();
   }
-  await page.getByRole('button', { name: '본문에 삽입' }).click();
-  await until(async () => (await page.locator('.editor-host figure.rw-drawing img').count()) > 0, '손글씨 삽입');
+  await waitSaved();
+}
+/** 글상자에 키보드로 쓰기 */
+async function writeText(text, dy = 110) {
+  await tid('tool-text').click();
+  const p = await pagePoint(0, dy);
+  await page.mouse.click(p[0], p[1]);
+  await page.locator('textarea.hd-text-input').waitFor();
+  await page.keyboard.type(text);
+  await tid('tool-pen').click(); // 다른 도구를 누르면 확정
+  await waitSaved();
+}
+/** 글상자를 다시 열어 내용 읽기 */
+async function readText(dy = 110) {
+  await tid('tool-text').click();
+  const p = await pagePoint(4, dy);
+  await page.mouse.click(p[0], p[1]);
+  const ta = page.locator('textarea.hd-text-input');
+  await ta.waitFor();
+  const v = await ta.inputValue();
+  await page.keyboard.press('Escape');
+  await tid('tool-pen').click().catch(() => {});
+  return v;
+}
+async function waitSaved() {
   await until(async () => /기기에 저장됨/.test(await tid('saved-state').textContent()), '작업본 저장');
+}
+async function saveVersion(expect) {
+  await tid('open-versions').click();
+  await tid('save-version').click();
+  const t = await toast(expect);
+  await page.locator('.drawer-head .icon-btn').click();
+  return t;
 }
 
 const A = '시료 A 600℃ 열처리';
+const A2 = '시료 A 600℃ 열처리 (XRD)';
 const B = '세포 배양 2일차';
 const C = '오프라인에서 만든 노트';
 const SECRET = '비밀실험값-7Q3Z';
@@ -168,63 +193,61 @@ try {
 
   await check('로그인(기기 등록)', async () => {
     await page.goto(APP);
-    await tid('login-server').fill(MOCK);
     await tid('login-id').fill('researcher1');
     await tid('login-pw').fill('goono1234');
     await tid('login-device').fill('연구실 iPad (E2E)');
+    await tid('login-server').fill(MOCK);
     await tid('login-submit').click();
-    await tid('new-note').waitFor();
+    await tid('new-note').first().waitFor();
     await until(async () => /일 남음/.test(await tid('deadline').textContent()), '오프라인 작성 기한 표시');
     const st = await serverState();
     assert(st.devices.length === 1 && st.devices[0].name === '연구실 iPad (E2E)', '서버에 기기 등록');
   });
 
-  await check('새 노트(온라인) → 서버에 노트 생성, 편집 위치 = 이 기기', async () => {
-    await createNote(A);
+  await check('새 노트 → 곧바로 필기 페이지(펜 선택, 키보드 없이), 서버에 노트 생성', async () => {
+    await newNote(A);
+    assert((await tid('tool-pen').getAttribute('aria-pressed')) === 'true', '펜이 기본 도구');
+    assert(await tid('first-hint').isVisible(), '빈 노트 안내');
+    assert((await page.locator('textarea, input:focus').count()) === 0, '키보드 입력칸이 열려 있지 않음');
     const n = await until(() => noteByTitle(A), '서버 노트 생성');
     assert(n.editLocation.type === 'DEVICE', '편집 위치 DEVICE');
     await shot('01-new-note');
   });
 
-  await check('오프라인에서 글 + 손글씨 작성 → 버전 저장(기기 대기)', async () => {
+  await check('오프라인에서 펜 필기 + 글상자 → 버전(기기 대기)', async () => {
     await setOffline(true);
-    await typeInEditor(`온도 600℃, 2시간 유지. 오프라인 작성. ${SECRET}`);
-    await drawInModal();
-    await tid('save-version').click();
-    await toast(/기기에 저장했습니다/);
-    await until(async () => (await tid('pending-count').textContent()) === '올릴 기록 1건', '올릴 기록 1건');
+    await drawStrokes();
+    assert(!(await tid('first-hint').count()), '첫 획 뒤 안내 사라짐');
+    await writeText(`온도 600℃, 2시간 유지. 오프라인 작성. ${SECRET}`);
+    await saveVersion(/기기에 저장했습니다/);
+    await until(async () => (await pendingCount()) === 1, '올릴 버전 1');
     await shot('02-offline-written');
   });
 
-  await check('기기 저장소는 암호화되어 있다(본문 평문 없음)', async () => {
+  await check('기기 저장소는 암호화되어 있다(글상자 평문 없음)', async () => {
     const dump = await page.evaluate(() => new Promise((resolve, reject) => {
       const req = indexedDB.open('Disc');
       req.onerror = () => reject(req.error);
       req.onsuccess = () => {
-        const tx = req.result.transaction(['FileStorage'], 'readonly');
-        const all = tx.objectStore('FileStorage').getAll();
+        const all = req.result.transaction(['FileStorage'], 'readonly').objectStore('FileStorage').getAll();
         all.onsuccess = () => resolve(all.result.map((r) => ({ path: r.path, content: typeof r.content === 'string' ? r.content : '' })));
       };
     }));
     const files = dump.filter((f) => f.path.includes('goono-note/'));
-    assert(files.some((f) => f.path.includes('/working/')) && files.some((f) => f.path.includes('/images/')), '작업본·이미지 파일 존재');
+    assert(files.some((f) => f.path.includes('/working/')) && files.some((f) => f.path.includes('/images/')), '작업본·페이지 이미지 파일 존재');
     const joined = files.map((f) => f.content).join('\n');
-    assert(!joined.includes(SECRET) && !joined.includes('온도'), '평문이 저장소에 없다');
-    assert(!joined.includes(Buffer.from(SECRET).toString('base64').slice(0, 12)), 'base64 평문도 없다');
+    assert(!joined.includes(SECRET) && !joined.includes('온도') && !joined.includes('strokes'), '평문이 저장소에 없다');
   });
 
-  await check('오프라인 상태로 앱 재시작 → 노트·작업본·이미지 복원', async () => {
+  await check('오프라인 상태로 앱 재시작 → 필기·글상자 복원', async () => {
     await page.reload();
     await tid('note-list').waitFor();
     const card = page.locator('[data-testid="note-card"]', { hasText: A });
-    await until(async () => /올릴 기록 1/.test(await card.textContent()), '목록에 올릴 기록 1');
+    await until(async () => /올릴 버전 1/.test(await card.textContent()), '목록에 올릴 버전 1');
+    assert(await card.locator('.thumb img').count() === 1, '목록 썸네일');
     await card.click();
-    await editor().waitFor();
-    await until(async () => (await editor().textContent()).includes(SECRET), '본문 복원');
-    const src = await page.locator('.editor-host figure.rw-drawing img').first().getAttribute('src');
-    assert(src.startsWith('blob:'), `손글씨 이미지 복호화 표시 (${src.slice(0, 20)})`);
-    const loaded = await page.locator('.editor-host figure.rw-drawing img').first().evaluate((img) => img.complete && img.naturalWidth > 0);
-    assert(loaded, '손글씨 이미지가 실제로 그려짐');
+    await tid('palette').waitFor();
+    assert((await readText()).includes(SECRET), '글상자 내용 복원');
   });
 
   await check('구노 웹: 태블릿에서 작성 중인 노트는 점검 요청 거부', async () => {
@@ -233,124 +256,141 @@ try {
     assert(r.status === 409 && r.body.error.code === 'EDITING_ON_DEVICE', `409 EDITING_ON_DEVICE (${r.status})`);
   });
 
-  await check('온라인 복귀 → 자동 동기화, 서버에 버전·손글씨 이미지 반영', async () => {
+  await check('온라인 복귀 → 자동 동기화, 웹과 같은 손글씨 블록(페이지 PNG + 획 JSON + 레이아웃)', async () => {
     await setOffline(false);
     await waitAllSent();
     const st = await serverState();
     const n = st.notes.find((x) => x.title === A);
     assert(n.versionIds.length === 1, `서버 버전 1개 (${n.versionIds.length})`);
     const v = st.versions.find((x) => x.versionId === n.versionIds[0]);
-    assert(v.hasDrawing && v.inlineImagePaths >= 1 && v.source === 'APP', '손글씨 figure + 인라인 이미지 경로');
+    assert(v.hasDrawing && v.inlineImagePaths === 1 && v.source === 'APP', `손글씨 블록 + 페이지 이미지 1장 (${v.inlineImagePaths})`);
     const html = await (await fetch(`${MOCK}/versions/${v.versionId}`)).text();
-    assert(html.includes(SECRET), '본문 반영');
+    const fig = /<figure class="rw-drawing"[^>]*data-strokes="([^"]+)"[^>]*data-drawing-sha256="([0-9a-f]{64})"/.exec(html);
+    assert(fig, 'figure.rw-drawing[data-strokes][data-drawing-sha256]');
+    const doc = JSON.parse(fig[1].replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&'));
+    assert(doc.layout?.type === 'pages' && doc.strokes.some((s) => s.tool === 'text' && s.text.includes(SECRET)), '획 JSON에 페이지 레이아웃·글상자');
+    assert(/alt="손글씨 1\/1쪽"/.test(html), '한글 대체 텍스트');
     const imgPath = /src="(\/editor-inline-images\/[^"]+)"/.exec(html)[1];
     const img = await fetch(MOCK + imgPath.replace(/&amp;/g, '&'));
     const bytes = new Uint8Array(await img.arrayBuffer());
-    assert(img.status === 200 && bytes[0] === 0x89 && bytes[1] === 0x50, '이미지 파일 PNG');
+    assert(img.status === 200 && bytes[0] === 0x89 && bytes[1] === 0x50, '페이지 이미지 PNG');
+    // A4 본문 비율 (267/180) 페이지 한 장
+    const w = (bytes[16] << 24) | (bytes[17] << 16) | (bytes[18] << 8) | bytes[19];
+    const h = (bytes[20] << 24) | (bytes[21] << 16) | (bytes[22] << 8) | bytes[23];
+    assert(Math.abs(h / w - 267 / 180) < 0.01, `페이지 비율 A4 본문 (${w}×${h})`);
   });
 
-  await check('온라인에서 추가 작성 → 버전 저장 즉시 업로드', async () => {
-    await typeInEditor(' 냉각 후 XRD 측정 예정.');
-    await tid('save-version').click();
-    await toast(/구노에 올렸습니다/);
-    const n = await noteByTitle(A);
+  await check('제목 고치기 + 두 번째 페이지 필기 → 버전과 함께 서버 제목 변경', async () => {
+    await page.locator('.title-btn').click();
+    await tid('title-input').fill(A2);
+    await page.keyboard.press('Enter');
+    await until(async () => (await tid('note-title').textContent()) === A2, '제목 변경');
+    // 두 번째 페이지로 넘겨 쓰기 (손가락 넘기기 대신 휠)
+    const b = await tid('board').boundingBox();
+    await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+    // 문서 끝(= 빈 2쪽의 아래쪽)까지 내린다
+    for (let i = 0; i < 4; i++) { await page.mouse.wheel(0, 1200); await page.waitForTimeout(100); }
+    await page.waitForTimeout(300);
+    await drawStrokes(0);
+    await saveVersion(/구노에 올렸습니다/);
+    const n = await until(() => noteByTitle(A2), '서버 제목 변경');
     assert(n.versionIds.length === 2, '서버 버전 2개');
+    const v = (await serverState()).versions.find((x) => x.versionId === n.versionIds[1]);
+    assert(v.inlineImagePaths === 2, `페이지 2장 (${v.inlineImagePaths})`);
   });
 
-  await check('작성 완료 → 편집권 반납(웹), 앱은 읽기 전용, 웹에서 점검 요청 가능', async () => {
+  await check('작성 완료 → 편집권 반납(웹), 앱은 읽기 전용(도구 사라짐), 웹에서 점검 요청 가능', async () => {
     await tid('release').click();
     await tid('release-confirm').click();
     await toast(/구노 웹으로 넘겼습니다/);
-    const n = await noteByTitle(A);
+    const n = await noteByTitle(A2);
     assert(n.editLocation.type === 'WEB', '서버 편집 위치 WEB');
-    await until(async () => (await tid('block-banner').getAttribute('data-kind')) === 'RELEASED', '반납 배너');
-    assert((await editor().getAttribute('contenteditable')) === 'false', '편집기 읽기 전용');
-    assert(await tid('save-version').isDisabled(), '버전 저장 비활성');
+    await until(async () => (await blockOf()) === 'RELEASED', '반납 배너');
+    assert(!(await paletteVisible()), '필기 도구 숨김');
+    assert(await tid('release').isDisabled(), '작성 완료 비활성');
     const r = await admin(`/notes/${n.noteMno}/status`, { status: 'INSPECTION' });
     assert(r.status === 200, '웹 점검 요청 허용');
+    await tid('status-pill').click();
     await tid('sync-now').click();
-    await until(async () => /점검 중/.test(await page.locator('.title-block').textContent()), '앱에 점검 중 표시');
+    await tid('status-pill').click();
+    await tid('back').click();
+    await until(async () => /점검 중/.test(await page.locator('[data-testid="note-card"]', { hasText: A2 }).textContent()), '목록에 점검 중');
     await shot('03-released');
   });
 
-  await check('편집권 회수: 회수 뒤 올린 버전은 미반영 기록으로 보관', async () => {
-    await tid('back').click();
-    await createNote(B);
-    await typeInEditor('배지 교체, 세포 밀도 80%.');
-    await tid('save-version').click();
-    await toast(/구노에 올렸습니다/);
+  await check('편집권 회수: 회수 뒤 버전은 미반영으로 보관', async () => {
+    await newNote(B);
+    await writeText('배지 교체, 세포 밀도 80%.', 20);
+    await saveVersion(/구노에 올렸습니다/);
     await setOffline(true);
-    await typeInEditor(' 오후 관찰: 오염 없음 (회수 후 작성).');
-    await tid('save-version').click();
-    await toast(/기기에 저장했습니다/);
+    await writeText('오후 관찰: 오염 없음 (회수 후 작성).', 120);
+    await saveVersion(/기기에 저장했습니다/);
     const n = await noteByTitle(B);
     await admin(`/notes/${n.noteMno}/reclaim`, { reason: '기기 분실 신고' });
     await setOffline(false);
-    await until(async () => (await tid('block-banner').getAttribute('data-kind').catch(() => '')) === 'RECLAIMED', '회수 배너');
+    await until(async () => (await blockOf()) === 'RECLAIMED', '회수 배너', 20_000);
+    assert(!(await paletteVisible()), '필기 도구 숨김');
     assert((await noteByTitle(B)).versionIds.length === 1, '서버에는 회수 전 버전만');
     await tid('open-versions').click();
-    await until(async () => (await page.locator('[data-testid="version-item"][data-state="REJECTED"]').count()) === 1, '미반영 1건');
-    assert(await page.locator('[data-testid="version-item"][data-state="SENT"]').count() === 1, '올라간 1건');
+    await until(async () => (await page.locator('[data-testid="version-item"][data-state="REJECTED"]').count()) === 1, '미반영 1');
+    assert(await page.locator('[data-testid="version-item"][data-state="SENT"]').count() === 1, '올라간 1');
     await shot('04-reclaimed-versions');
   });
 
-  await check('미반영 기록 → 새 노트로 복원 → 서버에 올림', async () => {
+  await check('미반영 버전 → 새 노트로 복원 → 서버에 올림', async () => {
     await page.locator('[data-testid="version-item"][data-state="REJECTED"] [data-testid="version-restore"]').click();
     await tid('new-note-create').click();
-    await editor().waitFor();
-    await until(async () => (await editor().textContent()).includes('회수 후 작성'), '복원 본문');
-    await tid('save-version').click();
-    await toast(/구노에 올렸습니다/);
+    await tid('palette').waitFor();
+    assert((await readText(120)).includes('회수 후 작성'), '복원 내용');
+    await saveVersion(/구노에 올렸습니다/);
     const n = await until(() => noteByTitle(`${B} (복원)`), '복원 노트 서버 생성');
     assert(n.versionIds.length === 1 && n.editLocation.type === 'DEVICE', '복원 노트 버전 1, 편집 위치 이 기기');
   });
 
   await check('오프라인 작성 기한 만료 → 편집 잠금, 기록은 보존', async () => {
     await admin('/config', { tokenTtlMs: 8000 });
+    await tid('back').click();
     await tid('sync-now').click();
     await until(async () => /시간 남음/.test(await tid('deadline').textContent()), '짧은 기한 받음');
     await setOffline(true);
+    await newNote(C);
+    await drawStrokes();
     await tid('back').click();
-    await createNote(C);
-    await typeInEditor('기한 만료 직전에 오프라인으로 만든 노트.');
-    await tid('save-version').click();
-    await toast(/기기에 저장했습니다/);
-    await tid('back').click();
-    await until(async () => (await tid('lock-banner').getAttribute('data-lock').catch(() => '')) === 'OFFLINE_EXPIRED', '기한 만료 잠금', 30_000);
-    assert(await tid('new-note').isDisabled(), '새 노트 비활성');
+    await until(async () => (await lockOf()) === 'OFFLINE_EXPIRED', '기한 만료 잠금', 30_000);
+    assert(await tid('new-note').first().isDisabled(), '새 노트 비활성');
     await page.locator('[data-testid="note-card"]', { hasText: C }).click();
-    await editor().waitFor();
-    assert((await editor().getAttribute('contenteditable')) === 'false', '편집기 읽기 전용');
-    assert((await editor().textContent()).includes('기한 만료 직전'), '작성분 보존');
+    await tid('board').waitFor();
+    await page.waitForTimeout(400);
+    assert(!(await paletteVisible()), '필기 도구 숨김(읽기 전용)');
     await shot('05-offline-expired');
   });
 
-  await check('만료 후 연결 → 재로그인 요구 → 재로그인하면 대기 기록 업로드', async () => {
+  await check('만료 후 연결 → 재로그인 요구 → 재로그인하면 대기 버전 업로드', async () => {
     await admin('/config', { tokenTtlMs: null });
     await setOffline(false);
-    await until(async () => (await tid('lock-banner').getAttribute('data-lock').catch(() => '')) === 'NEEDS_LOGIN', '재로그인 요구', 20_000);
+    await until(async () => (await lockOf()) === 'NEEDS_LOGIN', '재로그인 요구', 20_000);
     await page.getByRole('button', { name: '다시 로그인' }).click();
     assert(await tid('login-id').isDisabled(), '아이디 고정');
     await tid('login-pw').fill('goono1234');
     await tid('login-submit').click();
-    await editor().waitFor();
+    await tid('palette').waitFor();
     await waitAllSent();
     const n = await until(() => noteByTitle(C), '오프라인 노트 서버 생성');
     assert(n.versionIds.length === 1, '오프라인 노트 버전 업로드');
     assert((await tid('lock-banner').count()) === 0, '잠금 해제');
-    assert((await editor().getAttribute('contenteditable')) === 'true', '다시 편집 가능');
   });
 
   await check('기기 사용 중지(폐기) → 잠금', async () => {
     const st = await serverState();
     await admin(`/devices/${st.devices[0].deviceId}/revoke`, {});
+    await tid('status-pill').click();
     await tid('sync-now').click();
-    await until(async () => (await tid('lock-banner').getAttribute('data-lock').catch(() => '')) === 'REVOKED', '폐기 잠금');
-    assert((await editor().getAttribute('contenteditable')) === 'false', '편집기 읽기 전용');
+    await until(async () => (await lockOf()) === 'REVOKED', '폐기 잠금');
+    assert(!(await paletteVisible()), '필기 도구 숨김');
     await shot('06-revoked');
   });
 
-  // 409·401 등 서버 응답과 오프라인 요청 실패, 닫은 노트의 blob 이미지는 시나리오상 예상되는 리소스 오류 — 스크립트 예외만 본다
+  // 서버 응답(409·401)·오프라인 요청 실패는 시나리오상 예상되는 리소스 오류 — 스크립트 예외만 본다
   const benign = consoleErrors.filter((e) => !/^Failed to load resource:/.test(e));
   await check('페이지 오류 없음', async () => { assert(!benign.length, benign.join('\n')); });
 } catch {

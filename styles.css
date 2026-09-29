@@ -28,6 +28,7 @@
     --text: #e5e8ec;
     --text-dim: #9aa2ad;
     --canvas-area: #14161a;
+    --danger: #ff8a80;  /* 어두운 버튼 위에서도 4.5:1 이상 */
   }
 }
 
@@ -420,3 +421,7 @@ body.readonly #board { cursor: grab; }
   .tb-group { padding: 0 2px; gap: 2px; }
   #zoom-group { display: none; }
 }
+
+/* 글상자 도구 */
+#board.tool-text { cursor: text; }
+.hd-text-input::selection { background: rgba(47, 107, 242, .22); }

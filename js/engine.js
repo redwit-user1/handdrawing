@@ -7,7 +7,9 @@
  * - getCoalescedEvents로 고주파 입력 샘플 수집 → 부드러운 곡선
  * - 완료된 획은 오프스크린 캔버스에 캐시하여 그리는 동안 60fps 유지
  * - 도형(직선/화살표/사각형/타원), 올가미 선택(이동·복제·삭제)
- * - 실행 취소 / 다시 실행 (추가·삭제·이동·전체 지우기)
+ * - 실행 취소 / 다시 실행 (추가·삭제·이동·전체 지우기·글 수정)
+ * - 페이지 모드(layout.type = 'pages'): A4 본문 비율 페이지를 세로로 잇고, 페이지 단위로 내보낸다
+ * - 글상자(tool 'text'): 페이지 위에 키보드로 쓰는 글. 편집은 캔버스 위 textarea 오버레이
  */
 class DrawingEngine {
   constructor(canvas, opts = {}) {
@@ -53,6 +55,16 @@ class DrawingEngine {
 
     this._imgCache = new Map();   // 이미지 획의 src → HTMLImageElement
 
+    // 페이지 모드 — null 이면 무한 캔버스(기존 동작)
+    this.layout = null;           // { type: 'pages', pageW, pageH, gap, header? }
+    this.insets = { top: 0, right: 0, bottom: 0, left: 0 }; // 화면 가장자리에 떠 있는 UI 여백(화면 px)
+    this.pageHeader = null;       // (pageIndex, pageCount) => { left, right } — 없으면 제목 / "날짜 · N쪽"
+    this.title = '';              // 기본 머리글 왼쪽에 쓰는 노트 제목
+
+    // 글상자 편집 상태
+    this.textEdit = null;         // { stroke, isNew, before }
+    this.textInput = null;        // 오버레이 textarea (필요할 때 만든다)
+
     this._dirty = true;
     this._bgDirty = true;
     this._raf = null;
@@ -68,6 +80,7 @@ class DrawingEngine {
 
   /* ============== 데이터 로드/변경 ============== */
   setStrokes(strokes) {
+    this._endTextEdit(false);
     this.strokes = strokes || [];
     this.undoStack = [];
     this.redoStack = [];
@@ -78,7 +91,75 @@ class DrawingEngine {
   }
 
   resetView() {
+    if (this.layout) { this.fitWidth(); return; }
     this.scale = 1; this.tx = 0; this.ty = 0;
+    this.requestRender(true);
+    this._emitViewport();
+  }
+
+  /* ============== 페이지 모드 ============== */
+
+  /** 페이지 레이아웃 설정. null 이면 무한 캔버스 */
+  setLayout(layout) {
+    this._lastUsed = undefined;
+    this.layout = layout && layout.type === 'pages' ? normalizePageLayout(layout) : null;
+    this.minScale = this.layout ? 0.3 : 0.25;
+    this.requestRender(true);
+    if (this.layout) this.fitWidth();
+  }
+
+  _pageStride() { return this.layout.pageH + this.layout.gap; }
+
+  pageRect(i) {
+    const L = this.layout;
+    return { x: 0, y: i * this._pageStride(), w: L.pageW, h: L.pageH };
+  }
+
+  /** 내용이 있는 마지막 페이지 번호(0부터). 내용이 없으면 -1 */
+  lastUsedPage() {
+    if (!this.layout) return -1;
+    if (this._lastUsed !== undefined) return this._lastUsed;
+    const b = this._contentBounds(0);
+    this._lastUsed = b ? Math.max(0, Math.floor(Math.max(0, b.maxY) / this._pageStride())) : -1;
+    return this._lastUsed;
+  }
+
+  /** 화면에 보이는 페이지 수 — 쓴 페이지 다음에 빈 페이지 하나를 늘 둔다 */
+  pageCount() {
+    if (!this.layout) return 0;
+    return Math.max(this.layout.minPages || 1, this.lastUsedPage() + 2);
+  }
+
+  /** 페이지 폭을 화면 폭에 맞춘다 (가운데 정렬, 첫 페이지 위쪽) */
+  fitWidth(maxScale = 1.25) {
+    if (!this.layout) return;
+    const I = this.insets;
+    const availW = Math.max(100, this.cssW - I.left - I.right - 32);
+    this.scale = Math.max(this.minScale, Math.min(maxScale, availW / this.layout.pageW));
+    this.tx = I.left + (this.cssW - I.left - I.right - this.layout.pageW * this.scale) / 2;
+    this.ty = I.top + 16;
+    this.requestRender(true);
+    this._emitViewport();
+  }
+
+  /** 페이지 모드에서 문서 밖으로 너무 멀리 나가지 않게 뷰를 묶는다 */
+  _clampView() {
+    if (!this.layout) return;
+    const I = this.insets;
+    const pad = 16;
+    const docW = this.layout.pageW * this.scale;
+    const docH = (this.pageCount() * this._pageStride() - this.layout.gap) * this.scale;
+    const viewW = this.cssW - I.left - I.right;
+    if (docW <= viewW) this.tx = I.left + (viewW - docW) / 2;
+    else this.tx = Math.min(I.left + pad, Math.max(this.cssW - I.right - pad - docW, this.tx));
+    const maxTy = I.top + pad;
+    const minTy = Math.min(maxTy, this.cssH - I.bottom - pad - docH);
+    this.ty = Math.min(maxTy, Math.max(minTy, this.ty));
+  }
+
+  /** 스크롤 (화면 px) — 페이지 모드 목록/버튼용 */
+  scrollBy(dx, dy) {
+    this.tx -= dx; this.ty -= dy;
     this.requestRender(true);
     this._emitViewport();
   }
@@ -137,6 +218,8 @@ class DrawingEngine {
       for (const s of op.strokes) translateStroke(s, op.dx, op.dy);
     } else if (op.type === 'clear') {
       this.strokes = [];
+    } else if (op.type === 'edit') {
+      applyTextState(op.stroke, op.after);
     }
   }
 
@@ -158,6 +241,8 @@ class DrawingEngine {
       for (const s of op.strokes) translateStroke(s, -op.dx, -op.dy);
     } else if (op.type === 'clear') {
       this.strokes = op.strokes.slice();
+    } else if (op.type === 'edit') {
+      applyTextState(op.stroke, op.before);
     }
   }
 
@@ -330,6 +415,9 @@ class DrawingEngine {
     }
     if (this._rejectPalm(e)) return;
 
+    // 글상자 편집 중에 캔버스를 누르면 먼저 확정한다
+    if (this.textEdit) this._endTextEdit(true);
+
     const { x, y } = this._pos(e);
     this.pointers.set(e.pointerId, { x, y, type: e.pointerType });
     try { this.canvas.setPointerCapture(e.pointerId); } catch (_) {}
@@ -380,6 +468,12 @@ class DrawingEngine {
 
     // 다른 도구를 쓰기 시작하면 선택 해제
     this.clearSelection();
+
+    // 글상자: 누른 곳의 글상자를 고치거나 새로 만든다 (손가락 스크롤과 구분되도록 탭에서 처리)
+    if (this.tool === 'text') {
+      this.drawing = { textTap: true, pointerId: e.pointerId, pointerType: e.pointerType, sx: x, sy: y, wx: w.x, wy: w.y };
+      return;
+    }
 
     const erasing = this.tool === 'eraser' || this._isPenEraser(e);
     if (erasing) {
@@ -452,6 +546,16 @@ class DrawingEngine {
     if (!d || d.pointerId !== e.pointerId) return;
     const w = this.screenToWorld(x, y);
 
+    if (d.textTap) {
+      // 많이 움직이면 탭이 아니라 스크롤로 본다
+      if (Math.hypot(x - d.sx, y - d.sy) > 10) {
+        this.drawing = null;
+        this.gesture = { mode: 'pan', lastX: x, lastY: y, pointerId: e.pointerId };
+        this.canvas.classList.add('dragging');
+      }
+      return;
+    }
+
     if (d.erasing) {
       this._eraseAt(x, y);
       this.eraserPos = { x, y };
@@ -519,6 +623,14 @@ class DrawingEngine {
 
     const d = this.drawing;
     if (!d || d.pointerId !== e.pointerId) return;
+
+    if (d.textTap) {
+      this.drawing = null;
+      const hit = this.textAt(d.wx, d.wy);
+      if (hit) this.editText(hit);
+      else this.addText(d.wx, d.wy);
+      return;
+    }
 
     if (d.erasing) {
       if (this.erasedInDrag.length > 0) {
@@ -677,7 +789,7 @@ class DrawingEngine {
       const s = this.strokes[i];
       // 이미지는 지우개로 지우지 않는다 (사진 위 주석을 지우다 배경까지 지워지는 것 방지)
       // → 이미지 삭제는 올가미 선택 후 삭제로만
-      if (s.tool === 'image') continue;
+      if (s.tool === 'image' || s.tool === 'text') continue;
       if (this._strokeHit(s, w.x, w.y, r + s.size / 2)) {
         this.erasedInDrag.push({ stroke: s, index: i });
         this.strokes.splice(i, 1);
@@ -689,7 +801,7 @@ class DrawingEngine {
 
   _strokeHit(stroke, x, y, r) {
     const r2 = r * r;
-    if (stroke.tool === 'image') {
+    if (stroke.tool === 'image' || stroke.tool === 'text') {
       const [[ax, ay], [bx, by]] = stroke.points;
       return x >= Math.min(ax, bx) - r && x <= Math.max(ax, bx) + r &&
              y >= Math.min(ay, by) - r && y <= Math.max(ay, by) + r;
@@ -721,6 +833,8 @@ class DrawingEngine {
     }
     this.canvas.style.width = this.cssW + 'px';
     this.canvas.style.height = this.cssH + 'px';
+    this._clampView();
+    this._positionTextInput();
     this.requestRender(true);
   }
 
@@ -805,14 +919,86 @@ class DrawingEngine {
   _renderBackground() {
     const ctx = this.bgCtx;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    // 종이는 항상 흰색 (다크 모드에서도 필기 대비 유지)
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, this.bg.width, this.bg.height);
-
-    if (this.showGrid) this._drawGrid(ctx);
+    if (this.layout) {
+      this._renderPagesBackground(ctx);
+    } else {
+      // 종이는 항상 흰색 (다크 모드에서도 필기 대비 유지)
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, this.bg.width, this.bg.height);
+      if (this.showGrid) this._drawGrid(ctx);
+    }
 
     this._applyTransform(ctx);
-    for (const s of this.strokes) this._drawStroke(ctx, s);
+    for (const s of this.strokes) {
+      if (this.textEdit && s === this.textEdit.stroke) continue; // 편집 중인 글은 오버레이가 그린다
+      this._drawStroke(ctx, s);
+    }
+  }
+
+  /** 책상(바탕) + 보이는 페이지들 */
+  _renderPagesBackground(ctx) {
+    ctx.fillStyle = PAGE_DESK;
+    ctx.fillRect(0, 0, this.bg.width, this.bg.height);
+    const count = this.pageCount();
+    const top = this.screenToWorld(0, 0).y, bottom = this.screenToWorld(0, this.cssH).y;
+    const stride = this._pageStride();
+    const first = Math.max(0, Math.floor(top / stride));
+    const last = Math.min(count - 1, Math.floor(bottom / stride));
+    for (let i = first; i <= last; i++) {
+      const r = this.pageRect(i);
+      // 종이 그림자 (아래로 살짝, 부드럽게)
+      this._applyTransform(ctx);
+      ctx.save();
+      ctx.shadowColor = 'rgba(16, 24, 40, 0.10)';
+      ctx.shadowBlur = 14 * this.dpr;
+      ctx.shadowOffsetY = 3 * this.dpr;
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(r.x, r.y, r.w, r.h);
+      ctx.restore();
+      this._drawPaper(ctx, i, count, 1 / this.scale);
+    }
+  }
+
+  /** 페이지 i 의 모눈·머리글 (월드 좌표 변환이 걸린 ctx 에 그린다). hair = 1 화면 px 의 월드 길이 */
+  _drawPaper(ctx, i, count, hair) {
+    const r = this.pageRect(i);
+    const hh = PAGE_HEADER_H;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(r.x, r.y, r.w, r.h);
+    ctx.clip();
+    if (this.showGrid) {
+      ctx.strokeStyle = PAGE_GRID;
+      ctx.lineWidth = Math.max(hair, 0.6);
+      ctx.beginPath();
+      for (let gx = r.x + PAGE_GRID_STEP; gx < r.x + r.w; gx += PAGE_GRID_STEP) {
+        ctx.moveTo(gx, r.y + hh); ctx.lineTo(gx, r.y + r.h);
+      }
+      for (let gy = r.y + hh + PAGE_GRID_STEP; gy < r.y + r.h; gy += PAGE_GRID_STEP) {
+        ctx.moveTo(r.x, gy); ctx.lineTo(r.x + r.w, gy);
+      }
+      ctx.stroke();
+    }
+    // 머리글: 왼쪽 (제목·날짜), 오른쪽 (쪽 번호) + 가는 구분선
+    const head = this.pageHeader ? this.pageHeader(i, count)
+      : { left: this.title, right: `${this.layout.date ? this.layout.date + ' · ' : ''}${i + 1}쪽` };
+    ctx.fillStyle = PAGE_HEAD_INK;
+    ctx.font = `500 13px ${TEXT_FONT}`;
+    ctx.textBaseline = 'middle';
+    const my = r.y + hh / 2 + 2;
+    if (head && head.left) {
+      ctx.textAlign = 'left';
+      ctx.fillText(ellipsize(ctx, head.left, r.w * 0.72), r.x + 24, my);
+    }
+    ctx.textAlign = 'right';
+    ctx.fillText((head && head.right) || `${i + 1}쪽`, r.x + r.w - 24, my);
+    ctx.textAlign = 'left';
+    ctx.strokeStyle = PAGE_HEAD_RULE;
+    ctx.lineWidth = Math.max(hair, 0.8);
+    ctx.beginPath();
+    ctx.moveTo(r.x + 24, r.y + hh); ctx.lineTo(r.x + r.w - 24, r.y + hh);
+    ctx.stroke();
+    ctx.restore();
   }
 
   _drawGrid(ctx) {
@@ -846,6 +1032,11 @@ class DrawingEngine {
 
     if (stroke.tool === 'image') {
       this._drawImage(ctx, stroke, override);
+      return;
+    }
+
+    if (stroke.tool === 'text') {
+      this._drawText(ctx, stroke, override);
       return;
     }
 
@@ -922,6 +1113,182 @@ class DrawingEngine {
     }
   }
 
+  _drawText(ctx, stroke, override) {
+    const [[ax, ay], [bx, by]] = stroke.points;
+    const x = Math.min(ax, bx), y = Math.min(ay, by);
+    const w = Math.abs(bx - ax), h = Math.abs(by - ay);
+    if (override) {
+      ctx.fillRect(x, y, w, h);
+      return;
+    }
+    const fs = stroke.fontSize || TEXT_SIZE;
+    ctx.save();
+    ctx.fillStyle = stroke.color || '#1f2328';
+    ctx.font = `${fs}px ${TEXT_FONT}`;
+    ctx.textBaseline = 'top';
+    ctx.textAlign = 'left';
+    const lh = fs * TEXT_LINE;
+    const lines = wrapText(ctx, stroke.text || '', w - TEXT_PAD * 2);
+    lines.forEach((line, i) => ctx.fillText(line, x + TEXT_PAD, y + TEXT_PAD + i * lh + (lh - fs) / 2));
+    ctx.restore();
+  }
+
+  /* ============== 글상자 ============== */
+
+  /** 월드 좌표의 글상자 (위에 있는 것 우선) */
+  textAt(wx, wy) {
+    for (let i = this.strokes.length - 1; i >= 0; i--) {
+      const s = this.strokes[i];
+      if (s.tool !== 'text') continue;
+      const [[ax, ay], [bx, by]] = s.points;
+      if (wx >= Math.min(ax, bx) && wx <= Math.max(ax, bx) && wy >= Math.min(ay, by) && wy <= Math.max(ay, by)) return s;
+    }
+    return null;
+  }
+
+  /** (wx, wy) 에 새 글상자를 열고 편집을 시작한다 */
+  addText(wx, wy) {
+    if (this.readonly) return null;
+    const fs = TEXT_SIZE;
+    let x = wx - TEXT_PAD, y = wy - fs * TEXT_LINE / 2 - TEXT_PAD;
+    let w = 440;
+    if (this.layout) {
+      // 누른 페이지 안에 들어가도록 (머리글 아래, 좌우 여백 안)
+      const i = Math.max(0, Math.floor(wy / this._pageStride()));
+      const r = this.pageRect(i);
+      x = Math.max(r.x + 16, Math.min(x, r.x + r.w - 136));
+      y = Math.max(r.y + PAGE_HEADER_H + 6, y);
+      w = Math.min(w, r.x + r.w - 16 - x);
+    }
+    const stroke = {
+      tool: 'text', text: '', color: this.color, fontSize: fs, size: 0,
+      t: Date.now(), // 작성 시각 (연구노트 증적용)
+      points: [[round2(x), round2(y)], [round2(x + w), round2(y + fs * TEXT_LINE + TEXT_PAD * 2)]],
+    };
+    this._beginTextEdit(stroke, true);
+    return stroke;
+  }
+
+  editText(stroke) {
+    if (this.readonly || !stroke || stroke.tool !== 'text') return;
+    this._beginTextEdit(stroke, false);
+  }
+
+  _ensureTextInput() {
+    if (this.textInput) return this.textInput;
+    const ta = document.createElement('textarea');
+    ta.className = 'hd-text-input';
+    ta.setAttribute('aria-label', '글상자');
+    ta.spellcheck = false;
+    Object.assign(ta.style, {
+      position: 'absolute', zIndex: '5', margin: '0', resize: 'none', overflow: 'hidden',
+      border: '0', outline: '2px solid ' + TEXT_EDIT_ACCENT, outlineOffset: '0', borderRadius: '4px',
+      background: 'rgba(255,255,255,0.92)', boxSizing: 'border-box', whiteSpace: 'pre-wrap',
+      wordBreak: 'keep-all', overflowWrap: 'anywhere', caretColor: TEXT_EDIT_ACCENT,
+    });
+    ta.addEventListener('input', () => this._growTextInput());
+    ta.addEventListener('blur', () => this._endTextEdit(true));
+    ta.addEventListener('keydown', e => {
+      e.stopPropagation(); // 앱 단축키(p, e, Delete …)가 글자 입력을 가로채지 않게
+      if (e.key === 'Escape') { e.preventDefault(); ta.blur(); }
+    });
+    const parent = this.canvas.parentElement;
+    if (getComputedStyle(parent).position === 'static') parent.style.position = 'relative';
+    parent.appendChild(ta);
+    this.textInput = ta;
+    return ta;
+  }
+
+  _beginTextEdit(stroke, isNew) {
+    this._endTextEdit(true);
+    this.clearSelection();
+    this.textEdit = { stroke, isNew, before: textState(stroke) };
+    const ta = this._ensureTextInput();
+    ta.value = stroke.text || '';
+    ta.style.display = 'block';
+    this._positionTextInput();
+    this.requestRender(true);
+    // 포인터 이벤트 처리가 끝난 뒤 포커스해야 iOS 에서 키보드가 뜬다
+    ta.focus({ preventScroll: true });
+    setTimeout(() => { if (this.textEdit && this.textEdit.stroke === stroke) ta.focus({ preventScroll: true }); }, 0);
+    if (this.opts.onTextEdit) this.opts.onTextEdit(true);
+  }
+
+  _positionTextInput() {
+    if (!this.textEdit || !this.textInput) return;
+    const s = this.textEdit.stroke;
+    const fs = (s.fontSize || TEXT_SIZE) * this.scale;
+    const [[ax, ay], [bx]] = s.points;
+    const ta = this.textInput;
+    Object.assign(ta.style, {
+      left: (Math.min(ax, bx) * this.scale + this.tx) + 'px',
+      top: (ay * this.scale + this.ty) + 'px',
+      width: (Math.abs(bx - ax) * this.scale) + 'px',
+      font: `${fs}px ${TEXT_FONT}`,
+      lineHeight: String(TEXT_LINE),
+      padding: (TEXT_PAD * this.scale) + 'px',
+      color: s.color || '#1f2328',
+    });
+    this._growTextInput();
+  }
+
+  _growTextInput() {
+    const ta = this.textInput;
+    if (!ta) return;
+    ta.style.height = 'auto';
+    ta.style.height = ta.scrollHeight + 'px';
+  }
+
+  /** 글상자 편집 종료. commit=false 면 변경을 버린다 */
+  _endTextEdit(commit) {
+    const te = this.textEdit;
+    if (!te) return;
+    this.textEdit = null;
+    const ta = this.textInput;
+    const value = ta ? ta.value.replace(/\s+$/, '') : te.stroke.text;
+    if (ta) { ta.style.display = 'none'; if (document.activeElement === ta) ta.blur(); }
+    const s = te.stroke;
+    if (commit) {
+      if (te.isNew) {
+        if (value) {
+          s.text = value;
+          this._fitTextHeight(s);
+          this.strokes.push(s);
+          this._pushUndo({ type: 'add', stroke: s });
+          this._emitChange(true);
+        }
+      } else if (!value) {
+        const i = this.strokes.indexOf(s);
+        if (i >= 0) {
+          this.strokes.splice(i, 1);
+          this._pushUndo({ type: 'remove', entries: [{ stroke: s, index: i }] });
+          this._emitChange(true);
+        }
+      } else if (value !== te.before.text) {
+        s.text = value;
+        this._fitTextHeight(s);
+        this._pushUndo({ type: 'edit', stroke: s, before: te.before, after: textState(s) });
+        this._emitChange(true);
+      }
+    }
+    this.requestRender(true);
+    if (this.opts.onTextEdit) this.opts.onTextEdit(false);
+  }
+
+  /** 진행 중인 글상자 편집을 확정한다 (저장 직전에 호스트가 부른다) */
+  commitText() { this._endTextEdit(true); }
+
+  _fitTextHeight(s) {
+    const ctx = this.bgCtx;
+    ctx.save();
+    const fs = s.fontSize || TEXT_SIZE;
+    ctx.font = `${fs}px ${TEXT_FONT}`;
+    const [[ax, ay], [bx]] = s.points;
+    const lines = wrapText(ctx, s.text || '', Math.abs(bx - ax) - TEXT_PAD * 2);
+    ctx.restore();
+    s.points[1][1] = round2(ay + Math.max(1, lines.length) * fs * TEXT_LINE + TEXT_PAD * 2);
+  }
+
   _drawShape(ctx, stroke, boost = 0) {
     const [[x0, y0], [x1, y1]] = stroke.points;
     ctx.lineWidth = stroke.size + boost;
@@ -971,7 +1338,7 @@ class DrawingEngine {
   }
 
   /** 월드 좌표 영역을 흰 배경 캔버스로 렌더 (긴 변 4096px, 최대 2배율) */
-  _renderRegion(x, y, w, h) {
+  _renderRegion(x, y, w, h, page = null) {
     const exportScale = Math.min(2, 4096 / Math.max(w, h));
     const out = document.createElement('canvas');
     out.width = Math.max(1, Math.round(w * exportScale));
@@ -980,8 +1347,48 @@ class DrawingEngine {
     octx.fillStyle = '#ffffff';
     octx.fillRect(0, 0, out.width, out.height);
     octx.setTransform(exportScale, 0, 0, exportScale, -x * exportScale, -y * exportScale);
+    if (page) this._drawPaper(octx, page.index, page.count, 1 / exportScale);
     for (const s of this.strokes) this._drawStroke(octx, s);
     return out;
+  }
+
+  /** 페이지 모드: 첫 페이지부터 내용이 있는 마지막 페이지까지 페이지 그대로 렌더 */
+  renderLayoutPages() {
+    const last = this.lastUsedPage();
+    const pages = [];
+    for (let i = 0; i <= last; i++) {
+      const r = this.pageRect(i);
+      pages.push(this._renderRegion(r.x, r.y, r.w, r.h, { index: i, count: last + 1 }));
+    }
+    return pages;
+  }
+
+  /** 페이지 모드: 페이지 i 의 작은 미리보기 (목록 썸네일용) */
+  renderPageThumbnail(i = 0, width = 240) {
+    if (!this.layout) return null;
+    const r = this.pageRect(i);
+    const k = width / r.w;
+    const out = document.createElement('canvas');
+    out.width = Math.round(r.w * k);
+    out.height = Math.round(r.h * k);
+    const octx = out.getContext('2d');
+    octx.fillStyle = '#ffffff';
+    octx.fillRect(0, 0, out.width, out.height);
+    octx.setTransform(k, 0, 0, k, -r.x * k, -r.y * k);
+    this._drawPaper(octx, i, this.lastUsedPage() + 1, 1 / k);
+    for (const s of this.strokes) this._drawStroke(octx, s);
+    return out;
+  }
+
+  /** 페이지 렌더 전에 이미지(사진)가 모두 로드되길 기다린다 */
+  whenImagesReady() {
+    const waits = [];
+    for (const s of this.strokes) {
+      if (s.tool !== 'image') continue;
+      const img = this._getImage(s.src);
+      if (!img.complete) waits.push(new Promise(res => { img.addEventListener('load', res, { once: true }); img.addEventListener('error', res, { once: true }); }));
+    }
+    return Promise.all(waits);
   }
 
   /** 콘텐츠 경계를 계산해 흰 배경의 캔버스 한 장으로 렌더링 (없으면 null) */
@@ -1003,6 +1410,8 @@ class DrawingEngine {
    * 반환: 캔버스 배열 (내용이 없으면 빈 배열)
    */
   renderExportPages(aspect = A4_BODY_ASPECT, minPageWidth = 700) {
+    // 페이지 모드는 사용자가 본 페이지 그대로 내보낸다 (aspect 는 레이아웃이 이미 정함)
+    if (this.layout) return this.renderLayoutPages();
     const b = this._contentBounds();
     if (!b) return [];
     const w = Math.max(b.maxX - b.minX, minPageWidth);
@@ -1041,9 +1450,12 @@ class DrawingEngine {
 
   /* ============== 콜백 ============== */
   _emitChange(userEdit) {
+    this._lastUsed = undefined; // 페이지 수 다시 계산
     if (this.opts.onChange) this.opts.onChange(userEdit);
   }
   _emitViewport() {
+    this._clampView();
+    this._positionTextInput();
     if (this.opts.onViewport) this.opts.onViewport(this.scale);
   }
   _emitSelection() {
@@ -1068,6 +1480,82 @@ function round2(n) { return Math.round(n * 100) / 100; }
 
 /** A4 본문 비율 (세로/가로) — 297×210mm에서 사방 15mm 여백을 뺀 영역 */
 const A4_BODY_ASPECT = (297 - 30) / (210 - 30);
+
+/* 페이지 모드 기본값 — 폭 720 월드 단위, 높이는 A4 본문 비율 */
+const PAGE_W = 720;
+const PAGE_H = Math.round(PAGE_W * A4_BODY_ASPECT);
+const PAGE_GAP = 28;
+const PAGE_HEADER_H = 44;
+const PAGE_GRID_STEP = 24;
+const PAGE_DESK = '#e6e9ee';
+const PAGE_GRID = '#e9edf3';
+const PAGE_HEAD_INK = '#7a8494';
+const PAGE_HEAD_RULE = '#cfd6e0';
+
+/* 글상자 */
+const TEXT_FONT = "-apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', 'Noto Sans KR', 'Malgun Gothic', sans-serif";
+const TEXT_SIZE = 18;
+const TEXT_LINE = 1.5;
+const TEXT_PAD = 6;
+const TEXT_EDIT_ACCENT = '#2f6bf2';
+
+function normalizePageLayout(l) {
+  return {
+    type: 'pages',
+    pageW: Number(l.pageW) > 0 ? Number(l.pageW) : PAGE_W,
+    pageH: Number(l.pageH) > 0 ? Number(l.pageH) : PAGE_H,
+    gap: Number(l.gap) >= 0 ? Number(l.gap) : PAGE_GAP,
+    minPages: Number(l.minPages) > 0 ? Number(l.minPages) : 1,
+    // 노트를 만든 날 (페이지 머리글) — 웹에서 다시 열어 내보내도 같은 머리글이 나오게 레이아웃에 둔다
+    ...(typeof l.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(l.date) ? { date: l.date } : {}),
+  };
+}
+
+/** 새 페이지 노트의 기본 레이아웃 (저장 형식에 그대로 들어간다) */
+function defaultPageLayout(date) {
+  const l = { type: 'pages', pageW: PAGE_W, pageH: PAGE_H, gap: PAGE_GAP };
+  if (date) l.date = date;
+  return l;
+}
+
+function textState(s) {
+  return { text: s.text || '', points: s.points.map(p => p.slice()) };
+}
+
+function applyTextState(s, st) {
+  s.text = st.text;
+  s.points = st.points.map(p => p.slice());
+}
+
+/** 글 줄바꿈 — 문단(\n) 안에서 공백 단위로, 너무 긴 낱말은 글자 단위로 나눈다 */
+function wrapText(ctx, text, maxW) {
+  const out = [];
+  for (const para of String(text).split('\n')) {
+    if (para === '') { out.push(''); continue; }
+    let line = '';
+    for (const token of para.split(/(\s+)/)) {
+      if (!token) continue;
+      const tryLine = line + token;
+      if (ctx.measureText(tryLine).width <= maxW) { line = tryLine; continue; }
+      if (line.trim()) { out.push(line.replace(/\s+$/, '')); line = ''; }
+      if (/^\s+$/.test(token)) continue;
+      // 낱말 하나가 줄보다 길면 글자 단위로
+      for (const ch of token) {
+        if (ctx.measureText(line + ch).width > maxW && line) { out.push(line); line = ''; }
+        line += ch;
+      }
+    }
+    out.push(line);
+  }
+  return out;
+}
+
+function ellipsize(ctx, text, maxW) {
+  if (ctx.measureText(text).width <= maxW) return text;
+  let t = text;
+  while (t.length > 1 && ctx.measureText(t + '…').width > maxW) t = t.slice(0, -1);
+  return t + '…';
+}
 
 /** [시작, 끝] 구간들을 정렬·병합 */
 function mergeIntervals(spans) {
@@ -1129,7 +1617,7 @@ function shapeOutline(stroke) {
 
 /* 선택 판정용 샘플 점: 자유 곡선은 자체 점, 도형/이미지는 외곽선 샘플 */
 function strokeSamplePoints(stroke) {
-  if (stroke.tool === 'image') {
+  if (stroke.tool === 'image' || stroke.tool === 'text') {
     const [[ax, ay], [bx, by]] = stroke.points;
     const cx = (ax + bx) / 2, cy = (ay + by) / 2;
     return [
@@ -1163,4 +1651,10 @@ function pointInPolygon(x, y, polygon) {
     }
   }
   return inside;
+}
+
+/* 모듈 없이 쓰는 호스트(태블릿 앱 등)를 위한 전역 노출 */
+if (typeof window !== 'undefined') {
+  window.DrawingEngine = DrawingEngine;
+  window.HandDrawing = { DrawingEngine, defaultPageLayout, A4_BODY_ASPECT };
 }

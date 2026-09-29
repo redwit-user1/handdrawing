@@ -90,8 +90,8 @@ Goono-ELN 서버 구현의 기준이며, 개발·테스트용 구현은 `app/moc
 
 | 필드 | 내용 |
 |---|---|
-| `meta` | JSON `{ "clientVersionId", "baseVersionId" (직전에 서버가 받은 버전, 첫 버전은 null), "deviceWrittenAt", "contentHash", "autoSave" }` |
-| `noteContent` | 노트 HTML. 이미지는 `<img src="blob:goono-app/{ref}">` |
+| `meta` | JSON `{ "clientVersionId", "baseVersionId" (직전에 서버가 받은 버전, 첫 버전은 null), "deviceWrittenAt", "contentHash", "autoSave", "title" }` — `title`이 있으면 노트 제목을 그 값으로 바꾼다(앱에서 제목을 고친 경우) |
+| `noteContent` | 노트 HTML. 태블릿 앱은 손글씨 블록 하나 `<figure class="rw-drawing" data-strokes="{title,strokes,layout}" data-drawing-sha256="…">` 안에 페이지마다 `<img src="blob:goono-app/{ref}">` (웹 구노 editor-ai 의 손글씨 블록과 같은 형식) |
 | `inlineImages[blob:goono-app/{ref}]` | 이미지 파일 (여러 개) |
 
 - 201 `{ "versionId": 5008, "receivedAt": "…" }`

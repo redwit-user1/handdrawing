@@ -5,9 +5,8 @@
   "description": "구노 연구노트 태블릿 앱 — 오프라인 작성 후 구노 ELN에 동기화 (iPad·갤럭시 탭)",
   "type": "module",
   "scripts": {
-    "vendor": "node scripts/vendor.mjs",
-    "dev": "npm run vendor && vite",
-    "build": "npm run vendor && tsc --noEmit && vite build",
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "mock": "node mock-server/server.mjs",
     "typecheck": "tsc --noEmit",

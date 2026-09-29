@@ -66,6 +66,8 @@ export interface LocalNote {
   workingSavedAt: string | null;
   /** 마지막 버전 이후 작업본이 바뀌었는지 */
   workingDirty: boolean;
+  /** 목록 썸네일 (첫 페이지, JPEG data URL) */
+  thumb?: string | null;
   /** 동기화 중 노트 단위로 생긴 문제 (예: 프로젝트 권한 없음, 서버 버전 불일치) */
   syncIssue?: { code: string; message: string; at: string } | null;
 }
@@ -78,8 +80,10 @@ export interface LocalVersion {
   seq: number;
   deviceWrittenAt: string;
   autoSave: boolean;
-  /** 저장 형식 HTML — 이미지는 src="hdimg:{ref}" */
+  /** 전송할 본문 HTML(손글씨 블록) — 페이지 이미지는 src="hdimg:{ref}" */
   html: string;
+  /** 이 버전의 노트 제목 (서버 노트 제목을 따라 바꾼다) */
+  title?: string;
   imageRefs: string[];
   contentHash: string;
   state: VersionState;

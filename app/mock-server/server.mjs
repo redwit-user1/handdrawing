@@ -183,6 +183,7 @@ api.post('/notes/:noteMno/versions', auth, upload.any(), (req, res) => {
   state.clientVersions.set(v.clientVersionId, v.versionId);
   note.versionIds.push(v.versionId);
   note.latestVersionId = v.versionId;
+  if (typeof meta.title === 'string' && meta.title.trim()) note.title = meta.title.trim().slice(0, 200);
   note.updatedAt = now();
   res.status(201).json({ versionId: v.versionId, receivedAt: iso(v.receivedAt) });
 });
