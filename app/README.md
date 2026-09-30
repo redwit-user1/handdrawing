@@ -11,7 +11,8 @@ Capacitor 8 + React 19 + TypeScript.
 |---|---|
 | 노트 선반 | 첫 페이지 썸네일, 프로젝트·수정 시각·상태(작성 중/올릴 버전/미반영/점검 중) |
 | 새 노트 | 프로젝트 하나면 바로, 여럿이면 고르고 "쓰기 시작". 제목은 날짜로 채우고 나중에 고친다(첫 획 전에 키보드 없음) |
-| 필기 | 펜·형광펜·지우개·올가미·글상자·도형·사진 · 색/굵기 · 실행 취소 · 손가락 쓰기. 페이지 머리글에 제목·날짜·쪽 |
+| 필기 | 펜·형광펜·지우개·올가미·글상자·도형 · 색/굵기 · 실행 취소 · 손가락 쓰기. 페이지 머리글에 제목·날짜·쪽 |
+| + 넣기 | **사진**, **표**(줄·칸 수, 머리글, 칸 글 — 비워 두고 펜으로 칸에 써도 됨), **수식**(MathLive 수식 키보드, LaTeX), **화학식**(`2H2 + O2 -> 2H2O` 같은 보통 글자 → mhchem), **구조식**(Ketcher, SMILES 불러오기), **날짜·시각 도장**. 넣은 객체는 올가미로 한 번 누르면 선택되고 "○○ 고치기"로 다시 연다. 모두 오프라인에서 동작 |
 | 상태 알약 | 기기 저장 시각·올릴 버전·오프라인 여부. 누르면 동기화 상세(마지막 동기화, 작성 기한, 지금 동기화) |
 | 버전 기록 | 기기에서 쓴 시각·구노가 받은 시각·구노 버전·쪽수, 미반영 사유, 보기, 새 노트로 복원 |
 
@@ -86,6 +87,36 @@ npm run mock                                  # PC에서 모의 서버 (0.0.0.0:
 태블릿과 PC를 같은 Wi-Fi에 두고 APK 설치 → 로그인 화면 서버 주소에 `http://<PC IP>:8787`, `researcher1 / goono1234`.
 PC 브라우저 `http://localhost:8787/` 에서 올라온 노트를 본다. 태블릿 비행기 모드로 오프라인 작성을 시험할 수 있다.
 배포용 빌드는 반드시 `GOONO_DEV_HTTP` 없이 `npx cap sync` 한다.
+
+## 내 iPad에서 쓰기
+
+### 1) 바로 체험 — Mac 없이 (웹 체험판)
+
+체험판 빌드(`npm run build:demo` → `dist-demo/`)는 로그인·서버 없이 브라우저 안에서만 동작한다. 앱 안의 체험 서버(`src/lib/demo.ts`)가
+동기화 API를 흉내 내므로 버전 만들기 → "구노에 올라감", 비행기 모드 → 오프라인 작성 → 연결 후 자동 동기화까지 그대로 해 볼 수 있다.
+쓴 내용은 그 브라우저 저장소에만 남는다(Safari 기록·사이트 데이터를 지우면 사라짐). https 로 서빙해야 한다(WebCrypto).
+
+### 2) 앱으로 설치 — Mac + Xcode (무료 Apple ID 로도 가능)
+
+```bash
+git clone … && cd handdrawing && git checkout claude/handwriting-editor-integration-check-ktdg1j
+cd app && npm install
+npm run ios:dev        # 체험 모드 포함 빌드 → cap sync ios → Xcode 열기
+```
+1. Xcode ▸ App 타깃 ▸ **Signing & Capabilities** ▸ Team 에 본인 Apple ID(Personal Team) 추가.
+   Bundle Identifier 는 겹치지 않게 바꾼다(예: `kr.redwit.goono.note.kim`).
+2. iPad 를 케이블로 Mac 에 연결 → iPad 에서 "이 컴퓨터 신뢰".
+   iPad **설정 ▸ 개인정보 보호 및 보안 ▸ 개발자 모드** 켜기(재시동).
+3. Xcode 위쪽 실행 대상에서 iPad 를 고르고 ▶(Run). 처음이면 iPad **설정 ▸ 일반 ▸ VPN 및 기기 관리**에서 개발자 앱을 신뢰.
+4. 앱이 뜨면 로그인 화면의 **서버 없이 체험하기**, 또는 https 구노 서버 주소로 로그인.
+   - 무료 Apple ID 로 설치한 앱은 7일 뒤 실행이 막힌다 → 다시 ▶. 회사 Apple Developer 계정이면 1년.
+   - Mac 에서 돌리는 http 모의 서버(`npm run mock`)에 붙이려면 개발용으로만 `ios/App/App/Info.plist` 에
+     `NSAppTransportSecurity ▸ NSAllowsLocalNetworking = YES` 를 넣고 서버 주소를 `http://<Mac IP>:8787` 로.
+
+### 3) 여러 명·기관에 나눠 주기
+
+- 팀 안 시험: Apple Developer 계정 → App Store Connect **TestFlight** 내부 테스터(심사 없음, 90일).
+- 고객 기관 배포: 아래 ABM Custom App.
 
 ## 배포 (고객 기관 내부용)
 

@@ -1,5 +1,6 @@
 import { Device } from '@capacitor/device';
 import { api, normalizeServerUrl } from './api.ts';
+import { isDemoServer, resetDemo } from './demo.ts';
 import { secureGet, secureSet, uuid } from './crypto.ts';
 import { db } from './db.ts';
 import type { Session } from './types.ts';
@@ -80,8 +81,10 @@ export async function login(serverUrl: string, loginId: string, password: string
 
 /** 로그아웃 — 올리지 않은 기록이 있으면 거부한다. 기기 데이터는 모두 지운다 */
 export async function logout(): Promise<void> {
+  const s = await db.getSession();
   if (await hasUnsentWork()) throw new Error('올리지 않은 기록이 있습니다. 동기화한 뒤 로그아웃하세요.');
   await db.wipe();
+  if (s && isDemoServer(s.serverUrl)) resetDemo();
 }
 
 /** 시계 되돌림 감지용 최고 시각 갱신 */

@@ -1,8 +1,20 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { Engine, ShapeKind, Tool } from './engine.ts';
 import {
-  IcArrow, IcEllipse, IcEraser, IcHand, IcHighlighter, IcLasso, IcLine, IcPen, IcPhoto, IcRect, IcRedo, IcShapes, IcText, IcUndo,
+  IcArrow, IcClock, IcEllipse, IcEraser, IcFlask, IcHand, IcHighlighter, IcLasso, IcLine, IcMolecule, IcPen, IcPhoto, IcPlus, IcRect,
+  IcRedo, IcShapes, IcSigma, IcTable, IcText, IcUndo,
 } from '../icons.tsx';
+
+/** "+" 로 넣는 것들 */
+export type InsertKind = 'photo' | 'table' | 'math' | 'ce' | 'chem' | 'stamp';
+const INSERTS: { kind: InsertKind; label: string; hint: string; Icon: typeof IcPen }[] = [
+  { kind: 'photo', label: '사진', hint: '카메라·앨범', Icon: IcPhoto },
+  { kind: 'table', label: '표', hint: '칸 선 + 글', Icon: IcTable },
+  { kind: 'math', label: '수식', hint: '분수·근호·첨자', Icon: IcSigma },
+  { kind: 'ce', label: '화학식', hint: '분자식·반응식', Icon: IcFlask },
+  { kind: 'chem', label: '구조식', hint: '분자 구조 그리기', Icon: IcMolecule },
+  { kind: 'stamp', label: '날짜·시각', hint: '지금 시각 도장', Icon: IcClock },
+];
 
 /**
  * 떠 있는 필기 도구 — 가로 화면은 왼쪽 세로 레일, 세로 화면은 아래쪽 가로 막대.
@@ -41,16 +53,17 @@ function ToolButton({ label, active, onClick, children, testId, disabled, presse
   );
 }
 
-export default function ToolPalette({ engine, state, onChange, orientation, onPhoto, canUndo, canRedo }: {
+export default function ToolPalette({ engine, state, onChange, orientation, onPhoto, onInsert, canUndo, canRedo }: {
   engine: Engine;
   state: PaletteState;
   onChange: (next: Partial<PaletteState>) => void;
   orientation: 'rail' | 'bar';
   onPhoto: (file: File) => void;
+  onInsert: (kind: Exclude<InsertKind, 'photo'>) => void;
   canUndo: boolean;
   canRedo: boolean;
 }) {
-  const [pop, setPop] = useState<'shape' | 'ink' | null>(null);
+  const [pop, setPop] = useState<'shape' | 'ink' | 'insert' | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -100,7 +113,21 @@ export default function ToolPalette({ engine, state, onChange, orientation, onPh
           </div>
         )}
       </div>
-      <ToolButton label="사진 넣기" onClick={() => fileRef.current?.click()} testId="tool-photo" pressed={false}><IcPhoto /></ToolButton>
+      <div className="pal-anchor">
+        <ToolButton label="넣기: 사진·표·수식·화학식" active={pop === 'insert'} onClick={() => setPop(pop === 'insert' ? null : 'insert')} testId="tool-insert" pressed={false}>
+          <IcPlus />
+        </ToolButton>
+        {pop === 'insert' && (
+          <div className="pal-pop insert-pop" role="menu" aria-label="넣기">
+            {INSERTS.map(({ kind, label, hint, Icon }) => (
+              <button key={kind} type="button" role="menuitem" className="insert-item" data-testid={`insert-${kind}`}
+                onClick={() => { setPop(null); if (kind === 'photo') fileRef.current?.click(); else onInsert(kind); }}>
+                <Icon /><span><b>{label}</b><small>{hint}</small></span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
       <input ref={fileRef} type="file" accept="image/*" hidden onChange={(e) => {
         const f = e.target.files?.[0];
         e.target.value = '';

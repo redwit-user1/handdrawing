@@ -259,3 +259,17 @@ ELN → 에디터:
 - 브리지: `handdrawing:load`의 `note.layout`을 받아 페이지 모드로 열고, `json` 내보내기·`handdrawing:change`에 `layout`을 싣는다.
   editor-ai `DrawingModal`은 `layout`이 있으면 `data-strokes`에 함께 보존한다(없으면 기존 `{title, strokes}` 그대로).
 - 페이지 이미지 대체 텍스트는 `손글씨 N/M쪽`.
+
+### 5.1 삽입 객체 (태블릿 앱 "+ 넣기")
+
+모두 노트 JSON(`data-strokes`)의 `strokes` 안에 원본과 함께 들어가고, 페이지 PNG 에는 그림으로 찍힌다. 올가미로 옮기고 지우며 지우개로는 지워지지 않는다.
+
+| 종류 | 형식 |
+|---|---|
+| 표 | `{ "tool": "table", "rows": 4, "cols": 3, "header": true, "cells": [["시료","온도(℃)",…],…], "colW": […], "rowH": […], "points": [[x0,y0],[x1,y1]] }` — 칸 선과 칸 글을 엔진이 그린다(웹 손글씨 편집기에서도 보인다) |
+| 수식 | `{ "tool": "image", "kind": "math", "latex": "x=\\frac{…}", "src": "data:image/svg+xml;base64,…", "points": … }` (MathJax SVG) |
+| 화학식 | `{ "tool": "image", "kind": "ce", "ce": "2H2 + O2 -> 2H2O", "src": …svg }` (mhchem) |
+| 구조식 | `{ "tool": "image", "kind": "chem", "molfile": "…M  END", "smiles": "…", "src": …svg }` (Ketcher) |
+| 날짜·시각 | 글상자(`tool: "text"`) |
+
+웹 손글씨 편집기는 이 객체들을 그리고 옮길 수 있지만 내용 고치기(표 칸 글·수식 원문 등)는 앱에서만 한다.

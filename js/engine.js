@@ -10,6 +10,9 @@
  * - 실행 취소 / 다시 실행 (추가·삭제·이동·전체 지우기·글 수정)
  * - 페이지 모드(layout.type = 'pages'): A4 본문 비율 페이지를 세로로 잇고, 페이지 단위로 내보낸다
  * - 글상자(tool 'text'): 페이지 위에 키보드로 쓰는 글. 편집은 캔버스 위 textarea 오버레이
+ * - 표(tool 'table'): 칸 선만 긋고(손으로 채워 넣는다) 선택적으로 칸 글을 넣는다
+ * - 삽입 객체(수식·화학식·구조식): tool 'image' + kind/원본(latex·ce·molfile) — 호스트가 그림을 만들고 다시 고친다
+ * - 올가미 도구로 객체를 한 번 누르면 그 객체가 선택된다
  */
 class DrawingEngine {
   constructor(canvas, opts = {}) {
@@ -220,6 +223,8 @@ class DrawingEngine {
       this.strokes = [];
     } else if (op.type === 'edit') {
       applyTextState(op.stroke, op.after);
+    } else if (op.type === 'replace') {
+      restoreSnapshot(op.stroke, op.after);
     }
   }
 
@@ -243,6 +248,8 @@ class DrawingEngine {
       this.strokes = op.strokes.slice();
     } else if (op.type === 'edit') {
       applyTextState(op.stroke, op.before);
+    } else if (op.type === 'replace') {
+      restoreSnapshot(op.stroke, op.before);
     }
   }
 
@@ -327,7 +334,7 @@ class DrawingEngine {
   /* ============== 이미지 삽입 ============== */
 
   /** 이미지를 뷰포트 중앙에 삽입하고 바로 선택 상태로 만든다 (올가미로 이동 가능) */
-  addImage(src, naturalW, naturalH) {
+  addImage(src, naturalW, naturalH, extra = null) {
     if (this.readonly || !naturalW || !naturalH) return null;
     const rect = this.canvas.getBoundingClientRect();
     const center = this.screenToWorld(rect.width / 2, rect.height / 2);
@@ -336,19 +343,169 @@ class DrawingEngine {
     const maxH = (rect.height * 0.6) / this.scale;
     const k = Math.min(1, maxW / naturalW, maxH / naturalH);
     const w = naturalW * k, h = naturalH * k;
-    const stroke = {
+    const at = this._freeSpot(center.x - w / 2, center.y - h / 2, w, h);
+    const stroke = Object.assign({
       tool: 'image', src, size: 0, t: Date.now(),
-      points: [
-        [round2(center.x - w / 2), round2(center.y - h / 2)],
-        [round2(center.x + w / 2), round2(center.y + h / 2)],
-      ],
-    };
+      points: [[round2(at.x), round2(at.y)], [round2(at.x + w), round2(at.y + h)]],
+    }, extra || {});
     this.strokes.push(stroke);
     this._pushUndo({ type: 'add', stroke });
     this._setSelection([stroke]);
     this.requestRender(true);
     this._emitChange(true);
     return stroke;
+  }
+
+  /**
+   * 표를 뷰포트 가운데(페이지 안)에 넣고 선택한다.
+   * table: { rows, cols, cells?: string[][], header?: boolean, width? }
+   */
+  addTable(table) {
+    if (this.readonly) return null;
+    const rows = Math.max(1, table.rows | 0), cols = Math.max(1, table.cols | 0);
+    const rect = this.canvas.getBoundingClientRect();
+    const center = this.screenToWorld(rect.width / 2, rect.height / 2);
+    let width = table.width || Math.min(600, (rect.width * 0.8) / this.scale);
+    let x = center.x - width / 2, y = center.y - 60;
+    if (this.layout) {
+      const i = Math.max(0, Math.floor(center.y / this._pageStride()));
+      const r = this.pageRect(i);
+      width = Math.min(width, r.w - 48);
+      x = Math.max(r.x + 24, Math.min(x, r.x + r.w - 24 - width));
+      y = Math.max(r.y + PAGE_HEADER_H + 16, Math.min(y, r.y + r.h - 120));
+    }
+    const stroke = {
+      tool: 'table', size: 0, t: Date.now(), color: '#1f2328', fontSize: TABLE_TEXT,
+      header: table.header !== false,
+      rows, cols,
+      cells: normalizeCells(table.cells, rows, cols),
+      colW: Array.from({ length: cols }, () => round2(width / cols)),
+      rowH: [],
+      points: [[round2(x), round2(y)], [round2(x + width), round2(y)]],
+    };
+    this.layoutTable(stroke);
+    const th = stroke.points[1][1] - stroke.points[0][1];
+    const at = this._freeSpot(stroke.points[0][0], stroke.points[0][1], width, th);
+    translateStroke(stroke, at.x - stroke.points[0][0], at.y - stroke.points[0][1]);
+    this.strokes.push(stroke);
+    this._pushUndo({ type: 'add', stroke });
+    this._setSelection([stroke]);
+    this.requestRender(true);
+    this._emitChange(true);
+    return stroke;
+  }
+
+  /** 표의 줄 높이·오른쪽 아래 모서리를 칸 글에 맞춰 다시 계산한다 */
+  layoutTable(s) {
+    const ctx = this.bgCtx;
+    ctx.save();
+    ctx.font = `${s.fontSize || TABLE_TEXT}px ${TEXT_FONT}`;
+    const lh = (s.fontSize || TABLE_TEXT) * TABLE_LINE;
+    s.rowH = [];
+    for (let r = 0; r < s.rows; r++) {
+      let h = TABLE_ROW_MIN;
+      for (let c = 0; c < s.cols; c++) {
+        const text = (s.cells[r] && s.cells[r][c]) || '';
+        if (!text) continue;
+        const lines = wrapText(ctx, text, s.colW[c] - TABLE_PAD * 2);
+        h = Math.max(h, lines.length * lh + TABLE_PAD * 2);
+      }
+      s.rowH.push(round2(h));
+    }
+    ctx.restore();
+    const [x0, y0] = s.points[0];
+    s.points[1] = [round2(x0 + s.colW.reduce((a, b) => a + b, 0)), round2(y0 + s.rowH.reduce((a, b) => a + b, 0))];
+    return s;
+  }
+
+  /**
+   * 객체(표·삽입 그림·글상자) 내용을 바꾼다 — 실행 취소 한 단위.
+   * patch 의 키로 덮어쓰고, 표는 다시 배치한다.
+   */
+  updateObject(stroke, patch) {
+    if (this.readonly || !stroke) return;
+    const before = snapshotStroke(stroke);
+    Object.assign(stroke, JSON.parse(JSON.stringify(patch)));
+    if (stroke.tool === 'table') {
+      stroke.cells = normalizeCells(stroke.cells, stroke.rows, stroke.cols);
+      if (!Array.isArray(stroke.colW) || stroke.colW.length !== stroke.cols) {
+        const w = Math.abs(before.points[1][0] - before.points[0][0]);
+        stroke.colW = Array.from({ length: stroke.cols }, () => round2(w / stroke.cols));
+      }
+      this.layoutTable(stroke);
+    }
+    this._pushUndo({ type: 'replace', stroke, before, after: snapshotStroke(stroke) });
+    if (this.selection && this.selection.strokes.has(stroke)) this.selection.bbox = this._bboxOf([stroke]);
+    this.requestRender(true);
+    this._emitChange(true);
+    this._emitSelection();
+  }
+
+  /**
+   * 새 객체 자리: 다른 객체와 겹치면 그 아래로 내리고, 페이지 모드에서는 페이지 경계를 넘지 않게
+   * 다음 페이지 위쪽으로 보낸다(페이지 이미지가 둘로 잘리지 않게).
+   */
+  _freeSpot(x, y, w, h) {
+    for (let n = 0; n < 40; n++) {
+      if (this.layout) {
+        const stride = this._pageStride();
+        const i = Math.max(0, Math.floor(y / stride));
+        const r = this.pageRect(i);
+        if (y < r.y + PAGE_HEADER_H + 12) y = r.y + PAGE_HEADER_H + 12;
+        if (y + h > r.y + r.h - 12 && h < r.h - PAGE_HEADER_H - 24) { y = r.y + stride + PAGE_HEADER_H + 12; continue; }
+      }
+      const hit = this.strokes.find((s) => {
+        if (!isBoxObject(s)) return false;
+        const [[ax, ay], [bx, by]] = s.points;
+        return x < Math.max(ax, bx) && x + w > Math.min(ax, bx) && y < Math.max(ay, by) && y + h > Math.min(ay, by);
+      });
+      if (!hit) break;
+      y = Math.max(hit.points[0][1], hit.points[1][1]) + 16;
+    }
+    return { x, y };
+  }
+
+  /** 월드 좌표에 있는 객체(그림·글상자·표) — 위에 있는 것 우선 */
+  objectAt(wx, wy) {
+    for (let i = this.strokes.length - 1; i >= 0; i--) {
+      const s = this.strokes[i];
+      if (!isBoxObject(s)) continue;
+      const [[ax, ay], [bx, by]] = s.points;
+      if (wx >= Math.min(ax, bx) && wx <= Math.max(ax, bx) && wy >= Math.min(ay, by) && wy <= Math.max(ay, by)) return s;
+    }
+    return null;
+  }
+
+  /** 확정된 글상자를 뷰포트 가운데에 바로 넣는다 (날짜·시각 도장 등) */
+  addTextBox(text, opts = {}) {
+    if (this.readonly || !text) return null;
+    const rect = this.canvas.getBoundingClientRect();
+    const c = this.screenToWorld(rect.width / 2, rect.height / 2);
+    const fs = opts.fontSize || TEXT_SIZE;
+    let x = c.x - 160, w = opts.width || 320;
+    if (this.layout) {
+      const r = this.pageRect(Math.max(0, Math.floor(c.y / this._pageStride())));
+      x = Math.max(r.x + 24, Math.min(x, r.x + r.w - 24 - w));
+    }
+    const stroke = {
+      tool: 'text', text, color: opts.color || this.color, fontSize: fs, size: 0, t: Date.now(),
+      points: [[round2(x), round2(c.y)], [round2(x + w), round2(c.y + fs * TEXT_LINE + TEXT_PAD * 2)]],
+    };
+    this._fitTextHeight(stroke);
+    const bh = stroke.points[1][1] - stroke.points[0][1];
+    const at = this._freeSpot(stroke.points[0][0], stroke.points[0][1], w, bh);
+    translateStroke(stroke, at.x - stroke.points[0][0], at.y - stroke.points[0][1]);
+    this.strokes.push(stroke);
+    this._pushUndo({ type: 'add', stroke });
+    this._setSelection([stroke]);
+    this.requestRender(true);
+    this._emitChange(true);
+    return stroke;
+  }
+
+  /** 객체 하나만 선택 (삽입 직후·다시 고친 뒤) */
+  selectObject(stroke) {
+    if (stroke && this.strokes.includes(stroke)) this._setSelection([stroke]);
   }
 
   _getImage(src) {
@@ -661,7 +818,12 @@ class DrawingEngine {
       const path = this.lassoPath;
       this.lassoPath = null;
       this.drawing = null;
-      if (path && path.length >= 3) {
+      if (path && pathExtent(path) * this.scale < 12) {
+        // 짧게 누름 = 누른 곳의 객체 선택
+        const [px, py] = path[0];
+        const hit = this.objectAt(px, py);
+        if (hit) this._setSelection([hit]);
+      } else if (path && path.length >= 3) {
         this._setSelection(this._strokesInPolygon(path));
       }
       this.requestRender();
@@ -789,7 +951,7 @@ class DrawingEngine {
       const s = this.strokes[i];
       // 이미지는 지우개로 지우지 않는다 (사진 위 주석을 지우다 배경까지 지워지는 것 방지)
       // → 이미지 삭제는 올가미 선택 후 삭제로만
-      if (s.tool === 'image' || s.tool === 'text') continue;
+      if (isBoxObject(s)) continue;
       if (this._strokeHit(s, w.x, w.y, r + s.size / 2)) {
         this.erasedInDrag.push({ stroke: s, index: i });
         this.strokes.splice(i, 1);
@@ -801,7 +963,7 @@ class DrawingEngine {
 
   _strokeHit(stroke, x, y, r) {
     const r2 = r * r;
-    if (stroke.tool === 'image' || stroke.tool === 'text') {
+    if (isBoxObject(stroke)) {
       const [[ax, ay], [bx, by]] = stroke.points;
       return x >= Math.min(ax, bx) - r && x <= Math.max(ax, bx) + r &&
              y >= Math.min(ay, by) - r && y <= Math.max(ay, by) + r;
@@ -1040,6 +1202,11 @@ class DrawingEngine {
       return;
     }
 
+    if (stroke.tool === 'table') {
+      this._drawTable(ctx, stroke, override);
+      return;
+    }
+
     if (stroke.tool === 'shape') {
       this._drawShape(ctx, stroke, boost);
       return;
@@ -1130,6 +1297,58 @@ class DrawingEngine {
     const lh = fs * TEXT_LINE;
     const lines = wrapText(ctx, stroke.text || '', w - TEXT_PAD * 2);
     lines.forEach((line, i) => ctx.fillText(line, x + TEXT_PAD, y + TEXT_PAD + i * lh + (lh - fs) / 2));
+    ctx.restore();
+  }
+
+  _drawTable(ctx, s, override) {
+    const [[x0, y0], [x1, y1]] = s.points;
+    if (override) {
+      ctx.fillRect(Math.min(x0, x1), Math.min(y0, y1), Math.abs(x1 - x0), Math.abs(y1 - y0));
+      return;
+    }
+    const colW = s.colW || [], rowH = s.rowH || [];
+    ctx.save();
+    // 머리글 줄 바탕
+    if (s.header && rowH.length) {
+      ctx.fillStyle = TABLE_HEAD_FILL;
+      ctx.fillRect(x0, y0, x1 - x0, rowH[0]);
+    }
+    // 칸 선
+    ctx.strokeStyle = TABLE_RULE;
+    ctx.lineWidth = 1.2;
+    ctx.lineCap = 'butt';
+    ctx.beginPath();
+    let y = y0;
+    for (let r = 0; r <= rowH.length; r++) {
+      ctx.moveTo(x0, y); ctx.lineTo(x1, y);
+      if (r < rowH.length) y += rowH[r];
+    }
+    let x = x0;
+    for (let c = 0; c <= colW.length; c++) {
+      ctx.moveTo(x, y0); ctx.lineTo(x, y1);
+      if (c < colW.length) x += colW[c];
+    }
+    ctx.stroke();
+    // 칸 글
+    const fs = s.fontSize || TABLE_TEXT;
+    const lh = fs * TABLE_LINE;
+    ctx.fillStyle = s.color || '#1f2328';
+    ctx.textBaseline = 'top';
+    ctx.textAlign = 'left';
+    y = y0;
+    for (let r = 0; r < rowH.length; r++) {
+      ctx.font = `${s.header && r === 0 ? 600 : 400} ${fs}px ${TEXT_FONT}`;
+      x = x0;
+      for (let c = 0; c < colW.length; c++) {
+        const text = (s.cells[r] && s.cells[r][c]) || '';
+        if (text) {
+          const lines = wrapText(ctx, text, colW[c] - TABLE_PAD * 2);
+          lines.forEach((line, i) => ctx.fillText(line, x + TABLE_PAD, y + TABLE_PAD + i * lh + (lh - fs) / 2));
+        }
+        x += colW[c];
+      }
+      y += rowH[r];
+    }
     ctx.restore();
   }
 
@@ -1492,6 +1711,14 @@ const PAGE_GRID = '#e9edf3';
 const PAGE_HEAD_INK = '#7a8494';
 const PAGE_HEAD_RULE = '#cfd6e0';
 
+/* 표 */
+const TABLE_TEXT = 15;
+const TABLE_LINE = 1.4;
+const TABLE_PAD = 8;
+const TABLE_ROW_MIN = 40;     // 손으로 써 넣을 수 있는 높이
+const TABLE_RULE = '#5f6b7c';
+const TABLE_HEAD_FILL = '#eef2f7';
+
 /* 글상자 */
 const TEXT_FONT = "-apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', 'Noto Sans KR', 'Malgun Gothic', sans-serif";
 const TEXT_SIZE = 18;
@@ -1516,6 +1743,37 @@ function defaultPageLayout(date) {
   const l = { type: 'pages', pageW: PAGE_W, pageH: PAGE_H, gap: PAGE_GAP };
   if (date) l.date = date;
   return l;
+}
+
+/** 상자 모양 객체(지우개로 지우지 않고, 올가미로 옮긴다) */
+function isBoxObject(s) {
+  return s.tool === 'image' || s.tool === 'text' || s.tool === 'table';
+}
+
+function normalizeCells(cells, rows, cols) {
+  const out = [];
+  for (let r = 0; r < rows; r++) {
+    const row = [];
+    for (let c = 0; c < cols; c++) row.push(String((cells && cells[r] && cells[r][c]) || ''));
+    out.push(row);
+  }
+  return out;
+}
+
+function snapshotStroke(s) { return JSON.parse(JSON.stringify(s)); }
+
+function restoreSnapshot(s, snap) {
+  for (const k of Object.keys(s)) if (!(k in snap)) delete s[k];
+  Object.assign(s, JSON.parse(JSON.stringify(snap)));
+}
+
+function pathExtent(path) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const [x, y] of path) {
+    if (x < minX) minX = x; if (x > maxX) maxX = x;
+    if (y < minY) minY = y; if (y > maxY) maxY = y;
+  }
+  return Math.max(maxX - minX, maxY - minY);
 }
 
 function textState(s) {
@@ -1617,7 +1875,7 @@ function shapeOutline(stroke) {
 
 /* 선택 판정용 샘플 점: 자유 곡선은 자체 점, 도형/이미지는 외곽선 샘플 */
 function strokeSamplePoints(stroke) {
-  if (stroke.tool === 'image' || stroke.tool === 'text') {
+  if (isBoxObject(stroke)) {
     const [[ax, ay], [bx, by]] = stroke.points;
     const cx = (ax + bx) / 2, cy = (ay + by) / 2;
     return [

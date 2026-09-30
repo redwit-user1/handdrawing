@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { createNote, defaultTitle } from '../lib/notes.ts';
 import { logout } from '../lib/session.ts';
+import { isDemoServer } from '../lib/demo.ts';
 import { reload, sync, useApp } from '../lib/store.ts';
 import { relativeTime, sessionLock } from '../lib/rules.ts';
 import type { Project } from '../lib/types.ts';
@@ -106,13 +107,16 @@ export default function Notes({ onOpen, onRelogin, onLoggedOut }: { onOpen: (id:
     <div className="screen">
       <header className="topbar">
         <h1>연구노트</h1>
+        {isDemoServer(session.serverUrl) && <span className="chip info" data-testid="demo-chip">체험 모드</span>}
         <span className="grow" />
         <div className="pal-anchor">
           <button className="btn ghost" onClick={() => setMenu((v) => !v)} aria-expanded={menu} data-testid="user-menu">{session.user.name} · {session.deviceName}</button>
           {menu && (
             <div className="user-menu" role="menu">
               <div className="muted small">{session.serverUrl}</div>
-              <button className="btn ghost block" role="menuitem" onClick={() => void doLogout()} data-testid="logout">로그아웃</button>
+              <button className="btn ghost block" role="menuitem" onClick={() => void doLogout()} data-testid="logout">
+              {isDemoServer(session.serverUrl) ? '체험 끝내기 (기록 지움)' : '로그아웃'}
+            </button>
             </div>
           )}
         </div>

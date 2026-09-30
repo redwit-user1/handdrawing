@@ -1,3 +1,4 @@
+import { DemoError, demoCall, isDemoServer } from './demo.ts';
 import type { EditLocation, Project, ServerNote, ServerStatus, User } from './types.ts';
 
 /**
@@ -40,6 +41,15 @@ export function normalizeServerUrl(url: string): string {
 
 async function call<T>(serverUrl: string, path: string, init: RequestInit & { token?: string; timeout?: number } = {}): Promise<T> {
   const { token, timeout = JSON_TIMEOUT, ...rest } = init;
+  if (isDemoServer(serverUrl)) {
+    // 체험 모드 — 앱 안의 모의 서버
+    try {
+      return (await demoCall(path, rest)) as T;
+    } catch (e) {
+      if (e instanceof DemoError) throw new ApiError(e.status, e.code, e.message, e.body);
+      throw new ApiError(0, 'NETWORK', '서버에 연결할 수 없습니다.', { cause: String(e) });
+    }
+  }
   const headers = new Headers(rest.headers);
   if (token) headers.set('Authorization', `Bearer ${token}`);
   if (typeof rest.body === 'string') headers.set('Content-Type', 'application/json');

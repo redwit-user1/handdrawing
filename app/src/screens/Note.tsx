@@ -1,14 +1,48 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { App as CapApp } from '@capacitor/app';
 import { db } from '../lib/db.ts';
 import { createVersion, getDoc, renameNote, requestRelease, saveWorking } from '../lib/notes.ts';
 import { deadlineLabel, editBlock, relativeTime, sessionLock } from '../lib/rules.ts';
 import { reload, sync, useApp } from '../lib/store.ts';
-import { createEngine, headerFor, type Engine, type NotebookDoc } from '../notebook/engine.ts';
-import ToolPalette, { INK_COLORS, INK_SIZES, type PaletteState } from '../notebook/ToolPalette.tsx';
-import { IcBack, IcCheck, IcCopy, IcHand, IcHistory, IcLock, IcSync, IcText, IcTrash } from '../icons.tsx';
-import { Dialog, fmtDateTime, LockBanner } from '../ui.tsx';
+import { createEngine, headerFor, type Engine, type ImageObject, type NotebookDoc, type Stroke, type TableObject } from '../notebook/engine.ts';
+import ToolPalette, { INK_COLORS, INK_SIZES, type InsertKind, type PaletteState } from '../notebook/ToolPalette.tsx';
+import TableDialog, { type TableValue } from '../notebook/insert/TableDialog.tsx';
+import FormulaDialog, { type FormulaKind } from '../notebook/insert/FormulaDialog.tsx';
+import type { StructureResult } from '../notebook/insert/StructureSheet.tsx';
+import { IcBack, IcCheck, IcCopy, IcEdit, IcHand, IcHistory, IcLock, IcSync, IcText, IcTrash } from '../icons.tsx';
+import { Boundary, Dialog, fmtDateTime, LockBanner } from '../ui.tsx';
 import Versions from './Versions.tsx';
+
+// 구조식 편집기(Ketcher)는 크다 — 처음 열 때만 불러온다
+const StructureSheet = lazy(() => import('../notebook/insert/StructureSheet.tsx'));
+
+/** 넣기·고치기 대화상자 상태. target 이 있으면 그 객체를 고친다 */
+type InsertState =
+  | { kind: 'table'; target?: TableObject }
+  | { kind: FormulaKind; target?: ImageObject }
+  | { kind: 'chem'; target?: ImageObject };
+
+const OBJECT_NAMES: Record<string, string> = { table: '표', math: '수식', ce: '화학식', chem: '구조식', text: '글상자', image: '사진' };
+function objectName(s: Stroke | null): string {
+  if (!s) return '';
+  return OBJECT_NAMES[(s.kind as string) ?? s.tool] ?? '';
+}
+function editable(s: Stroke | null): boolean {
+  return !!s && (s.tool === 'table' || s.tool === 'text' || (s.tool === 'image' && !!s.kind));
+}
+
+function toBase64Svg(svg: string): string {
+  const bytes = new TextEncoder().encode(svg);
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return `data:image/svg+xml;base64,${btoa(bin)}`;
+}
+
+function stamp(d = new Date()): string {
+  const p = (n: number) => String(n).padStart(2, '0');
+  const days = ['일', '월', '화', '수', '목', '금', '토'];
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} (${days[d.getDay()]}) ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
 
 const AUTO_VERSION_MS = 5 * 60_000;
 const SAVE_DEBOUNCE_MS = 800;
@@ -69,6 +103,8 @@ export default function Note({ id, onBack, onOpen, onRelogin }: { id: string; on
   }));
   const [history, setHistory] = useState({ undo: false, redo: false });
   const [hasSelection, setHasSelection] = useState(false);
+  const [selObj, setSelObj] = useState<Stroke | null>(null);
+  const [inserting, setInserting] = useState<InsertState | null>(null);
   const [orientation, setOrientation] = useState<'rail' | 'bar'>('rail');
   const [statusOpen, setStatusOpen] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
@@ -122,9 +158,15 @@ export default function Note({ id, onBack, onOpen, onRelogin }: { id: string; on
         setPal((p) => (p.touchDraws ? { ...p, touchDraws: false } : p));
         savePref(TOUCH_PREF, false);
       },
-      onSelection(sel) { setHasSelection(!!sel); },
+      onSelection(sel) {
+        setHasSelection(!!sel);
+        const picked = engine.selectedStrokes();
+        setSelObj(picked.length === 1 ? picked[0] : null);
+      },
     });
     engineRef.current = engine;
+    // 진단·E2E 용 (기기 안에서만 보인다)
+    (window as unknown as { __engine?: Engine }).__engine = engine;
     let cancelled = false;
     void (async () => {
       const doc = await getDoc(id);
@@ -270,6 +312,66 @@ export default function Note({ id, onBack, onOpen, onRelogin }: { id: string; on
     }
   };
 
+  /** 넣은 객체를 바로 옮기고 고칠 수 있게 올가미로 */
+  const afterInsert = () => setPal((p) => ({ ...p, tool: 'lasso' }));
+
+  const onInsert = (kind: Exclude<InsertKind, 'photo'>) => {
+    if (kind === 'stamp') {
+      engineRef.current?.addTextBox(stamp());
+      afterInsert();
+      return;
+    }
+    setInserting({ kind } as InsertState);
+  };
+
+  const editSelected = () => {
+    const s = selObj;
+    const e = engineRef.current;
+    if (!s || !e) return;
+    if (s.tool === 'text') { setPal((p) => ({ ...p, tool: 'text' })); e.editText(s); return; }
+    if (s.tool === 'table') { setInserting({ kind: 'table', target: s as TableObject }); return; }
+    const k = s.kind as string;
+    if (k === 'math' || k === 'ce') setInserting({ kind: k, target: s as ImageObject });
+    else if (k === 'chem') setInserting({ kind: 'chem', target: s as ImageObject });
+  };
+
+  /** 그림 객체 넣기 또는 (위치를 지킨 채) 바꾸기 */
+  const placeImage = (target: ImageObject | undefined, src: string, w: number, h: number, extra: Partial<ImageObject>) => {
+    const e = engineRef.current;
+    if (!e) return;
+    if (target) {
+      const [[x0, y0]] = target.points;
+      e.updateObject(target, { ...extra, src, points: [[x0, y0], [x0 + w, y0 + h]] });
+      e.selectObject(target);
+    } else {
+      e.addImage(src, w, h, extra);
+    }
+    afterInsert();
+  };
+
+  const submitTable = (v: TableValue) => {
+    const e = engineRef.current;
+    const st = inserting;
+    setInserting(null);
+    if (!e || !st || st.kind !== 'table') return;
+    if (st.target) {
+      e.updateObject(st.target, { rows: v.rows, cols: v.cols, header: v.header, cells: v.cells, ...(v.cols !== st.target.cols ? { colW: null } : {}) });
+      e.selectObject(st.target);
+    } else {
+      e.addTable(v);
+    }
+    afterInsert();
+  };
+
+  const submitStructure = (r: StructureResult) => {
+    const st = inserting;
+    setInserting(null);
+    if (!st || st.kind !== 'chem') return;
+    // 페이지에 알맞은 크기로 (폭 최대 360)
+    const k = Math.min(1, 360 / r.w, 280 / r.h);
+    placeImage(st.target, toBase64Svg(r.svg), Math.round(r.w * k), Math.round(r.h * k), { kind: 'chem', molfile: r.molfile, smiles: r.smiles });
+  };
+
   const commitTitle = async (value: string) => {
     setEditingTitle(false);
     const t = value.trim();
@@ -348,7 +450,7 @@ export default function Note({ id, onBack, onOpen, onRelogin }: { id: string; on
         {!loaded && <div className="canvas-loading muted">노트를 여는 중…</div>}
 
         {loaded && !readOnly && (
-          <ToolPalette engine={engineRef.current!} state={pal} orientation={orientation} onPhoto={(f) => void onPhoto(f)}
+          <ToolPalette engine={engineRef.current!} state={pal} orientation={orientation} onPhoto={(f) => void onPhoto(f)} onInsert={onInsert}
             canUndo={history.undo} canRedo={history.redo} onChange={(next) => setPal((p) => ({ ...p, ...next }))} />
         )}
 
@@ -362,6 +464,9 @@ export default function Note({ id, onBack, onOpen, onRelogin }: { id: string; on
 
         {hasSelection && !readOnly && (
           <div className="selection-bar" role="toolbar" aria-label="선택한 항목" data-testid="selection-bar">
+            {editable(selObj) && (
+              <button className="btn" onClick={editSelected} data-testid="edit-object"><IcEdit /> {objectName(selObj)} 고치기</button>
+            )}
             <button className="btn" onClick={() => engineRef.current?.duplicateSelection()}><IcCopy /> 복제</button>
             <button className="btn danger" onClick={() => engineRef.current?.deleteSelection()}><IcTrash /> 삭제</button>
           </div>
@@ -369,6 +474,33 @@ export default function Note({ id, onBack, onOpen, onRelogin }: { id: string; on
       </div>
 
       {toast && <div className="toast" role="status" data-testid="toast">{toast}</div>}
+
+      {inserting?.kind === 'table' && (
+        <TableDialog initial={inserting.target ? { rows: inserting.target.rows, cols: inserting.target.cols, header: inserting.target.header, cells: inserting.target.cells } : undefined}
+          onSubmit={submitTable} onClose={() => setInserting(null)} />
+      )}
+      {(inserting?.kind === 'math' || inserting?.kind === 'ce') && (
+        <FormulaDialog kind={inserting.kind}
+          initial={inserting.target ? String((inserting.kind === 'math' ? inserting.target.latex : inserting.target.ce) ?? '') : undefined}
+          onClose={() => setInserting(null)}
+          onSubmit={(source, img) => {
+            const st = inserting;
+            setInserting(null);
+            placeImage(st.target, img.src, img.w, img.h, st.kind === 'math' ? { kind: 'math', latex: source } : { kind: 'ce', ce: source });
+          }} />
+      )}
+      {inserting?.kind === 'chem' && (
+        <Boundary fallback={(err) => (
+          <Dialog title="구조식 편집기를 열 수 없습니다" onClose={() => setInserting(null)}>
+            <p className="small danger-text">{err.message}</p>
+            <div className="row end"><button className="btn" onClick={() => setInserting(null)}>닫기</button></div>
+          </Dialog>
+        )}>
+          <Suspense fallback={<div className="sheet-full"><div className="canvas-loading muted">구조식 편집기를 불러오는 중…</div></div>}>
+            <StructureSheet initialMolfile={inserting.target?.molfile} onSubmit={submitStructure} onClose={() => setInserting(null)} />
+          </Suspense>
+        </Boundary>
+      )}
 
       {confirmRelease && (
         <Dialog title="작성 완료" onClose={() => setConfirmRelease(false)} testId="release-dialog">

@@ -8,3 +8,5 @@ android/build/
 ios/App/Pods/
 ios/DerivedData/
 dist-apk/
+public/mathlive/
+dist-demo/

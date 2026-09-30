@@ -328,3 +328,70 @@ svg { flex: none; }
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
 .field .hint { display: block; margin-top: 6px; font-weight: 400; }
+
+/* ── 넣기 메뉴 ── */
+.insert-pop { flex-direction: column; gap: 2px; min-width: 220px; padding: 6px; }
+.palette.rail .insert-pop { top: auto; bottom: -40px; transform: none; }
+.insert-item {
+  display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 0 12px; border: 0; border-radius: var(--r-m);
+  background: transparent; text-align: left; cursor: pointer; color: var(--ink);
+}
+.insert-item:hover { background: var(--panel-2); }
+.insert-item svg { width: 24px; height: 24px; color: var(--ink-2); }
+.insert-item span { display: grid; line-height: 1.25; }
+.insert-item small { color: var(--muted); font-size: 12px; }
+
+/* ── 표 대화상자 ── */
+.table-controls { gap: 16px; margin-bottom: 4px; }
+.stepper { display: inline-flex; align-items: center; gap: 2px; border: 1px solid var(--line); border-radius: var(--r-m); padding: 2px 4px 2px 12px; }
+.stepper-label { font-size: var(--fs-s); font-weight: 600; color: var(--ink-2); margin-right: 4px; }
+.stepper-value { min-width: 28px; text-align: center; font-weight: 700; font-variant-numeric: tabular-nums; }
+.stepper .icon-btn { width: 44px; height: 44px; }
+.stepper .icon-btn:disabled { opacity: .35; }
+.check { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; font-size: var(--fs-s); }
+.check input { width: 20px; height: 20px; margin: 0; }
+.table-edit { display: grid; gap: 0; margin-top: 8px; max-height: 46vh; overflow: auto; border: 1px solid var(--line-strong); border-radius: var(--r-s); }
+.table-edit .cell {
+  min-height: 44px; min-width: 0; padding: 0 10px; border: 0; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line);
+  background: #fff; font-size: var(--fs-m);
+}
+.table-edit .cell.head { background: #eef2f7; font-weight: 600; }
+.table-edit .cell:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* ── 수식·화학식 ── */
+.math-input {
+  display: block; width: 100%; min-height: 64px; padding: 10px 14px; font-size: 24px;
+  border: 1px solid var(--line-strong); border-radius: var(--r-m); background: #fff;
+}
+.math-input:focus-within { border-color: var(--accent); box-shadow: var(--focus); }
+.mono-input, .field .mono-input {
+  display: block; width: 100%; min-height: 48px; padding: 0 14px; margin-top: 6px; border: 1px solid var(--line-strong); border-radius: var(--r-m);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 17px; font-weight: 400; background: #fff; color: var(--ink);
+}
+.mono-input:focus-visible { outline: none; border-color: var(--accent); box-shadow: var(--focus); }
+.tex-source { margin-top: 10px; font-size: var(--fs-s); color: var(--ink-2); }
+.tex-source summary { cursor: pointer; min-height: 32px; display: flex; align-items: center; }
+.chip-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.chip-row .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 500; }
+.formula-preview {
+  margin-top: 14px; min-height: 96px; padding: 16px; display: grid; place-items: center; overflow: auto;
+  border-radius: var(--r-m); background: var(--paper); border: 1px dashed var(--line-strong);
+}
+.formula-preview img { max-width: 100%; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .92em; background: var(--panel-2); padding: 1px 4px; border-radius: 4px; }
+
+/* ── 구조식 (전체 화면) ── */
+.sheet-full { position: fixed; inset: 0; z-index: 45; background: var(--panel); display: flex; flex-direction: column; }
+.sheet-head {
+  display: flex; align-items: center; gap: 8px; padding: calc(8px + var(--safe-top)) calc(12px + var(--safe-right)) 8px calc(8px + var(--safe-left));
+  border-bottom: 1px solid var(--line);
+}
+.smiles-input {
+  width: min(360px, 34vw); min-height: 44px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: var(--r-m);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 14px;
+}
+.ketcher-host { position: relative; flex: 1; min-height: 0; }
+.ketcher-host > div { height: 100%; }
+.demo-link { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); display: grid; justify-items: start; gap: 2px; }
+.login-card > .chip { display: inline-block; margin-bottom: 10px; }
+.login-card .plain-list { margin: 12px 0 4px; }

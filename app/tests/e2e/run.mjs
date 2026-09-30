@@ -299,6 +299,96 @@ try {
     assert(v.inlineImagePaths === 2, `페이지 2장 (${v.inlineImagePaths})`);
   });
 
+  await check('+ 넣기: 표(칸 글) → 수식 → 화학식 → 날짜 도장 → 구조식(SMILES)', async () => {
+    const ins = async (kind) => { await tid('tool-insert').click(); await tid(`insert-${kind}`).click(); };
+    // 표 3×3 → 4줄, 머리글·칸 글
+    await ins('table');
+    await tid('table-dialog').waitFor();
+    await tid('table-rows-plus').click();
+    const cells = page.locator('[data-testid="table-grid"] input');
+    assert(await cells.count() === 12, `4×3 칸 (${await cells.count()})`);
+    await cells.nth(0).fill('시료'); await cells.nth(1).fill('온도(℃)'); await cells.nth(2).fill('XRD 피크');
+    await cells.nth(3).fill('A-1'); await cells.nth(4).fill('600');
+    await tid('table-submit').click();
+    await until(async () => /표 고치기/.test(await tid('edit-object').textContent().catch(() => '')), '표 선택·고치기 버튼');
+    // 수식 (LaTeX 직접)
+    await ins('math');
+    await tid('formula-dialog').waitFor();
+    await page.locator('.tex-source summary').click();
+    await tid('tex-source').fill('x=\\frac{-b\\pm\\sqrt{b^2-4ac}}{2a}');
+    await until(async () => (await tid('formula-preview').locator('img').count()) === 1, '수식 미리보기');
+    await tid('formula-submit').click();
+    await until(async () => /수식 고치기/.test(await tid('edit-object').textContent().catch(() => '')), '수식 선택');
+    // 화학식 (mhchem) — 문법 오류는 알려 주고 넣기 비활성
+    await ins('ce');
+    await tid('ce-input').fill('2H2 + O2 -> 2H2O{');
+    await until(async () => /고칠 곳/.test(await tid('formula-preview').textContent()), '화학식 오류 안내');
+    assert(await tid('formula-submit').isDisabled(), '오류면 넣기 비활성');
+    await tid('ce-input').fill('2H2 + O2 -> 2H2O');
+    await until(async () => (await tid('formula-preview').locator('img').count()) === 1, '화학식 미리보기');
+    await tid('formula-submit').click();
+    // 날짜·시각 도장
+    await ins('stamp');
+    await until(async () => /글상자 고치기/.test(await tid('edit-object').textContent().catch(() => '')), '도장 글상자 선택');
+    // 구조식 (Ketcher, 기기 안 WASM) — SMILES 로 불러와 넣기
+    await ins('chem');
+    await tid('structure-sheet').waitFor({ timeout: 60_000 });
+    await tid('smiles-input').fill('CC(=O)Oc1ccccc1C(=O)O');
+    await until(async () => !(await tid('smiles-load').isDisabled()), '구조식 편집기 준비', 90_000);
+    await tid('smiles-load').click();
+    await page.waitForTimeout(1500);
+    await tid('structure-submit').click();
+    await until(async () => (await tid('structure-sheet').count()) === 0, '구조식 넣기', 30_000);
+    await until(async () => /구조식 고치기/.test(await tid('edit-object').textContent().catch(() => '')), '구조식 선택');
+    await waitSaved();
+    await shot('07-inserted-objects');
+  });
+
+  await check('넣은 객체 다시 고치기: 올가미로 표를 눌러 선택 → 칸 글 수정 → 실행 취소·다시 실행', async () => {
+    // 표를 찾아 누르기 — 엔진 객체 위치를 화면 좌표로
+    await tid('tool-lasso').click();
+    await page.mouse.click(5, 400); // 빈 곳 (선택 해제) — 팔레트 밖 캔버스 왼쪽 여백
+    const box = await tid('board').boundingBox();
+    const tableAt = await page.evaluate(() => {
+      const e = window.__engine;
+      const t = e.strokes.find((s) => s.tool === 'table');
+      const [[x0, y0], [x1, y1]] = t.points;
+      return { x: ((x0 + x1) / 2) * e.scale + e.tx, y: ((y0 + y1) / 2) * e.scale + e.ty };
+    });
+    await page.mouse.click(box.x + tableAt.x, box.y + tableAt.y);
+    await until(async () => /표 고치기/.test(await tid('edit-object').textContent().catch(() => '')), '누르면 표 선택');
+    await tid('edit-object').click();
+    const cells = page.locator('[data-testid="table-grid"] input');
+    assert((await cells.nth(0).inputValue()) === '시료', '기존 칸 글');
+    await cells.nth(5).fill('2θ=28.4°');
+    await tid('table-submit').click();
+    const cellOf = () => page.evaluate(() => window.__engine.strokes.find((s) => s.tool === 'table').cells[1][2]);
+    await until(async () => (await cellOf()) === '2θ=28.4°', '칸 글 수정');
+    await tid('undo').click();
+    assert((await cellOf()) === '', '실행 취소');
+    await tid('redo').click();
+    assert((await cellOf()) === '2θ=28.4°', '다시 실행');
+    await waitSaved();
+  });
+
+  await check('버전에 객체 원본(표 칸·LaTeX·화학식·molfile)과 페이지 그림이 함께 올라간다', async () => {
+    await saveVersion(/구노에 올렸습니다/);
+    const n = await noteByTitle(A2);
+    const vid = n.versionIds[n.versionIds.length - 1];
+    const html = await (await fetch(`${MOCK}/versions/${vid}`)).text();
+    const fig = /data-strokes="([^"]+)"/.exec(html);
+    const docJson = JSON.parse(fig[1].replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&'));
+    const S = docJson.strokes;
+    const table = S.find((x) => x.tool === 'table');
+    assert(table && table.rows === 4 && table.cells[0][1] === '온도(℃)' && table.cells[1][2] === '2θ=28.4°', '표 칸 글');
+    assert(S.some((x) => x.kind === 'math' && /\\frac/.test(x.latex) && /^data:image\/svg\+xml/.test(x.src)), '수식 LaTeX + SVG');
+    assert(S.some((x) => x.kind === 'ce' && x.ce === '2H2 + O2 -> 2H2O'), '화학식 원문');
+    assert(S.some((x) => x.kind === 'chem' && /M\s+END/.test(x.molfile) && x.smiles), '구조식 molfile·SMILES');
+    assert(S.some((x) => x.tool === 'text' && /^\d{4}-\d{2}-\d{2} \([월화수목금토일]\) \d{2}:\d{2}$/.test(x.text)), '날짜 도장');
+    const v = (await serverState()).versions.find((x) => x.versionId === vid);
+    assert(v.inlineImagePaths >= 2, `페이지 그림 (${v.inlineImagePaths})`);
+  });
+
   await check('작성 완료 → 편집권 반납(웹), 앱은 읽기 전용(도구 사라짐), 웹에서 점검 요청 가능', async () => {
     await tid('release').click();
     await tid('release-confirm').click();

@@ -34,3 +34,10 @@ export const IcRect = (p: P) => <svg {...base(p)}><rect x="4" y="6" width="16" h
 export const IcEllipse = (p: P) => <svg {...base(p)}><ellipse cx="12" cy="12" rx="8" ry="6" /></svg>;
 export const IcGrid = (p: P) => <svg {...base(p)}><path d="M4 9h16M4 15h16M9 4v16M15 4v16" /><rect x="4" y="4" width="16" height="16" rx="1" /></svg>;
 export const IcChevronDown = (p: P) => <svg {...base(p)}><path d="m6 9 6 6 6-6" /></svg>;
+export const IcTable = (p: P) => <svg {...base(p)}><rect x="3" y="4" width="18" height="16" rx="1.5" /><path d="M3 9.5h18M3 15h18M9 4v16M15 4v16" /></svg>;
+export const IcSigma = (p: P) => <svg {...base(p)}><path d="M18 5H6l6 7-6 7h12" /></svg>;
+export const IcFlask = (p: P) => <svg {...base(p)}><path d="M9 3h6M10 3v6L4.5 18.5A1.7 1.7 0 0 0 6 21h12a1.7 1.7 0 0 0 1.5-2.5L14 9V3" /><path d="M7 15h10" /></svg>;
+export const IcMolecule = (p: P) => <svg {...base(p)}><path d="m12 3 7.8 4.5v9L12 21l-7.8-4.5v-9Z" /><path d="M12 7.5 15.9 9.75v4.5L12 16.5" /></svg>;
+export const IcClock = (p: P) => <svg {...base(p)}><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg>;
+export const IcEdit = (p: P) => <svg {...base(p)}><path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16Z" /><path d="m13.5 6.5 4 4" /></svg>;
+export const IcMinus = (p: P) => <svg {...base(p)}><path d="M5 12h14" /></svg>;

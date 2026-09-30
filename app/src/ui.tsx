@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from 'react';
+import { Component, useEffect, type ReactNode } from 'react';
 import { sync, useApp, type NoteCounts } from './lib/store.ts';
 import { deadlineLabel, relativeTime, sessionLock, LOCK_MESSAGES } from './lib/rules.ts';
 import type { LocalNote } from './lib/types.ts';
@@ -88,4 +88,13 @@ export function fmtDateTime(iso: string | null | undefined): string {
   const d = new Date(iso);
   const p = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+/** 무거운 부품(구조식 편집기 등)이 실패해도 노트 화면 전체가 죽지 않게 */
+export class Boundary extends Component<{ fallback: (error: Error, reset: () => void) => ReactNode; children: ReactNode }, { error: Error | null }> {
+  state = { error: null as Error | null };
+  static getDerivedStateFromError(error: Error) { return { error }; }
+  render() {
+    return this.state.error ? this.props.fallback(this.state.error, () => this.setState({ error: null })) : this.props.children;
+  }
 }

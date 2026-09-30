@@ -9,6 +9,14 @@ export interface PageLayout { type: 'pages'; pageW: number; pageH: number; gap: 
 /** 저장 형식 (= 서버 data-strokes JSON) */
 export interface NotebookDoc { title: string; strokes: unknown[]; layout: PageLayout }
 
+/** 획·객체 (엔진 스키마 — js/engine.js) */
+export interface Stroke { tool: string; points: number[][]; [k: string]: unknown }
+
+/** 삽입 객체: 그림 + 원본. kind 로 무엇을 다시 열지 정한다 */
+export type ObjectKind = 'math' | 'ce' | 'chem';
+export interface ImageObject extends Stroke { tool: 'image'; src: string; kind?: ObjectKind; latex?: string; ce?: string; molfile?: string; smiles?: string }
+export interface TableObject extends Stroke { tool: 'table'; rows: number; cols: number; cells: string[][]; header: boolean; colW: number[]; rowH: number[] }
+
 export type Tool = 'pen' | 'highlighter' | 'eraser' | 'lasso' | 'text' | 'shape' | 'pan';
 export type ShapeKind = 'line' | 'arrow' | 'rect' | 'ellipse';
 
@@ -46,8 +54,13 @@ export interface Engine {
   clearSelection(): void;
   deleteSelection(): void;
   duplicateSelection(): void;
-  selectedStrokes(): unknown[];
-  addImage(src: string, w: number, h: number): unknown;
+  selectedStrokes(): Stroke[];
+  addImage(src: string, w: number, h: number, extra?: Partial<ImageObject>): Stroke | null;
+  addTable(t: { rows: number; cols: number; cells?: string[][]; header?: boolean; width?: number }): Stroke | null;
+  addTextBox(text: string, opts?: { fontSize?: number; width?: number; color?: string }): Stroke | null;
+  updateObject(stroke: Stroke, patch: Record<string, unknown>): void;
+  objectAt(wx: number, wy: number): Stroke | null;
+  selectObject(stroke: Stroke): void;
   commitText(): void;
   editText(stroke: unknown): void;
   pageCount(): number;
