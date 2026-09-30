@@ -41,6 +41,8 @@ export interface Engine {
   insets: { top: number; right: number; bottom: number; left: number };
   pageHeader: ((i: number, n: number) => { left?: string; right?: string }) | null;
   selection: unknown;
+  /** 펜·손가락이 화면에 닿아 입력 중이면 null 이 아니다 */
+  drawing: unknown;
   undoStack: unknown[];
   redoStack: unknown[];
   scale: number;

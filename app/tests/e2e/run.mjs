@@ -214,6 +214,34 @@ try {
     await shot('01-new-note');
   });
 
+  await check('이어 쓰는 동안은 저장하지 않고, 손을 멈추면 한 번 저장', async () => {
+    await tid('tool-pen').click();
+    // 저장 표시가 바뀌는 순간을 모두 기록
+    await page.evaluate(() => {
+      const el = document.querySelector('[data-testid="saved-state"]');
+      window.__saveLog = [];
+      new MutationObserver(() => window.__saveLog.push(el.textContent)).observe(el, { childList: true, characterData: true, subtree: true });
+    });
+    // 획 사이 0.7초, 9초 가까이 쉬지 않고 쓴다 (예전에는 획마다 저장했다)
+    const t0 = Date.now();
+    for (let k = 0; k < 12; k++) {
+      const a = await pagePoint(k * 14, 420), b = await pagePoint(k * 14 + 10, 470);
+      await page.mouse.move(a[0], a[1]);
+      await page.mouse.down();
+      for (let i = 1; i <= 8; i++) { await page.mouse.move(a[0] + (b[0] - a[0]) * i / 8, a[1] + (b[1] - a[1]) * i / 8); await page.waitForTimeout(20); }
+      await page.mouse.up();
+      await page.waitForTimeout(550);
+    }
+    const writing = Date.now() - t0;
+    const during = await page.evaluate(() => window.__saveLog.slice());
+    assert(writing > 6000, `충분히 오래 썼다 (${writing}ms)`);
+    assert(!during.some((t) => /저장 중|기기에 저장됨/.test(t)), `쓰는 동안 저장 없음: ${during.join(' | ')}`);
+    assert(/쓰는 중/.test(await tid('saved-state').textContent()), '쓰는 중 표시');
+    await waitSaved();
+    const saves = await page.evaluate(() => window.__saveLog.filter((t) => /저장 중/.test(t)).length);
+    assert(saves === 1, `멈춘 뒤 한 번 저장 (${saves})`);
+  });
+
   await check('오프라인에서 펜 필기 + 글상자 → 버전(기기 대기)', async () => {
     await setOffline(true);
     await drawStrokes();

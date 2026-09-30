@@ -45,7 +45,15 @@ function stamp(d = new Date()): string {
 }
 
 const AUTO_VERSION_MS = 5 * 60_000;
-const SAVE_DEBOUNCE_MS = 800;
+/**
+ * 작업본 저장 시점 — 한 획마다 저장하면(암호화 + 파일 쓰기) 이어 쓰는 필기가 끊긴다.
+ * 손을 멈추고 IDLE_SAVE_MS 가 지나면 저장하고, 펜이 닿아 있는 동안은 절대 저장하지 않는다.
+ * 쉬지 않고 오래 쓰는 경우를 위해, 저장 안 한 지 MAX_UNSAVED_MS 가 넘으면 잠깐 멈춘 틈(SHORT_IDLE_MS)에 저장한다.
+ * 앱을 내리거나 노트를 나갈 때·버전을 만들 때는 바로 저장한다.
+ */
+const IDLE_SAVE_MS = 4000;
+const SHORT_IDLE_MS = 1500;
+const MAX_UNSAVED_MS = 60_000;
 const TOUCH_PREF = 'goono-note.touch-draws';
 const INK_PREF = 'goono-note.ink';
 
@@ -77,7 +85,7 @@ async function downscale(file: File, maxDim = 1600): Promise<{ src: string; w: n
   }
 }
 
-type SaveState = { kind: 'idle' | 'saving' | 'saved' | 'error'; at?: string; message?: string };
+type SaveState = { kind: 'idle' | 'dirty' | 'saving' | 'saved' | 'error'; at?: string; message?: string };
 
 export default function Note({ id, onBack, onOpen, onRelogin }: { id: string; onBack: () => void; onOpen: (id: string) => void; onRelogin: () => void }) {
   const { session, notes, counts, now, online, syncing, lastResult } = useApp();
@@ -91,6 +99,7 @@ export default function Note({ id, onBack, onOpen, onRelogin }: { id: string; on
   const docRef = useRef<NotebookDoc | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dirtyRef = useRef(false);
+  const dirtySince = useRef(0);
   const readOnlyRef = useRef(readOnly);
   readOnlyRef.current = readOnly;
 
@@ -130,27 +139,48 @@ export default function Note({ id, onBack, onOpen, onRelogin }: { id: string; on
     dirtyRef.current = false;
     const next: NotebookDoc = { ...doc, layout: engine.layout ?? doc.layout, strokes: engine.strokes };
     docRef.current = next;
+    setSave((s) => ({ kind: 'saving', at: s.at }));
     try {
       const at = await saveWorking(id, next);
-      setSave({ kind: 'saved', at });
+      // 저장하는 사이에 또 썼으면 '쓰는 중' 그대로 (그 획은 다음 저장에 들어간다)
+      setSave({ kind: dirtyRef.current ? 'dirty' : 'saved', at });
     } catch (e) {
       dirtyRef.current = true;
       setSave({ kind: 'error', message: (e as Error).message });
     }
   }, [id]);
 
+  /** 손을 멈출 때까지 기다렸다가 저장한다 — 획마다 다시 미룬다 */
+  const scheduleSave = useCallback(() => {
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    const overdue = Date.now() - dirtySince.current > MAX_UNSAVED_MS;
+    saveTimer.current = setTimeout(() => {
+      saveTimer.current = null;
+      if (!dirtyRef.current) return;
+      // 펜이 닿아 있으면(획을 긋는 중) 다음 틈으로 미룬다
+      if (engineRef.current?.drawing) { scheduleSaveRef.current(); return; }
+      void persist();
+    }, overdue ? SHORT_IDLE_MS : IDLE_SAVE_MS);
+  }, [persist]);
+  const scheduleSaveRef = useRef(scheduleSave);
+  scheduleSaveRef.current = scheduleSave;
+
   // ── 엔진 준비 (노트마다 한 번) ──
   useEffect(() => {
     const canvas = canvasRef.current!;
     const engine = createEngine(canvas, {
       onChange(userEdit) {
-        setHistory({ undo: engine.undoStack.length > 0, redo: engine.redoStack.length > 0 });
+        // 값이 그대로면 화면을 다시 그리지 않는다 (획마다 리렌더하지 않도록)
+        const undo = engine.undoStack.length > 0, redo = engine.redoStack.length > 0;
+        setHistory((h) => (h.undo === undo && h.redo === redo ? h : { undo, redo }));
         setEmpty(engine.strokes.length === 0);
         if (!userEdit || readOnlyRef.current) return;
-        dirtyRef.current = true;
-        setSave({ kind: 'saving' });
-        if (saveTimer.current) clearTimeout(saveTimer.current);
-        saveTimer.current = setTimeout(() => void persist(), SAVE_DEBOUNCE_MS);
+        if (!dirtyRef.current) {
+          dirtyRef.current = true;
+          dirtySince.current = Date.now();
+          setSave((s) => (s.kind === 'dirty' ? s : { kind: 'dirty', at: s.at }));
+        }
+        scheduleSaveRef.current();
       },
       onPenDetected() {
         // 펜이 닿으면 손가락은 넘기기로 (손바닥 오입력 방지)
@@ -384,6 +414,7 @@ export default function Note({ id, onBack, onOpen, onRelogin }: { id: string; on
   };
 
   const saveLabel = readOnly ? '읽기 전용'
+    : save.kind === 'dirty' ? '쓰는 중'
     : save.kind === 'saving' ? '저장 중…'
     : save.kind === 'error' ? '저장 실패'
     : save.at ? `기기에 저장됨 ${fmtDateTime(save.at).slice(11, 16)}` : '기기에 저장됨';
