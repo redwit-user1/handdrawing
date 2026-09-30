@@ -95,6 +95,9 @@ PC 브라우저 `http://localhost:8787/` 에서 올라온 노트를 본다. 태�
 체험판 빌드(`npm run build:demo` → `dist-demo/`)는 로그인·서버 없이 브라우저 안에서만 동작한다. 앱 안의 체험 서버(`src/lib/demo.ts`)가
 동기화 API를 흉내 내므로 버전 만들기 → "구노에 올라감", 비행기 모드 → 오프라인 작성 → 연결 후 자동 동기화까지 그대로 해 볼 수 있다.
 쓴 내용은 그 브라우저 저장소에만 남는다(Safari 기록·사이트 데이터를 지우면 사라짐). https 로 서빙해야 한다(WebCrypto).
+보안 정책이 엄격한 곳(claude.ai 아티팩트 등)에서도 뜨도록: 나중에 불러오는 조각의 스타일은 JS 안에 넣고
+(`inlineKetcherCss`), 구조식 계산 엔진의 문자열 코드 실행을 없앴으며(`scripts/vite-embind-no-eval.ts`),
+WASM 까지 막힌 곳에서는 구조식 편집기를 엔진 없이 연다(직접 그리기·molfile 저장·그림은 됨, SMILES 불러오기는 안 됨).
 
 ### 2) 앱으로 설치 — Mac + Xcode (무료 Apple ID 로도 가능)
 
