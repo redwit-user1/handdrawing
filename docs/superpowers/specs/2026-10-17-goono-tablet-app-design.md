@@ -38,7 +38,9 @@
 - **G6 점검자·관리자 유도** — 점검 대기 알림·재알림, 지연 현황. [사용자 "얼추 맞다"]
 - **G7 시점인증 누락 방지** — 점검 완료 후 하루 안에 처리 못 하면 영영 빠지는 스케줄러 문제 수정. [사용자 "얼추 맞다"]
 - **G8 구노 서버 API 구현** — `SYNC-API.md` v1 + 이 문서의 추가분. 웹 세션과 분리된 기기 토큰 인증.
-- **G9 기관별 빌드 없음** — 앱 하나를 배포하고 서버 주소는 앱에서 입력. [기존]
+- **G9 기관별 빌드 없음** — 앱 하나를 배포하고 서버 주소는 연결용 QR에서 받는다. [기존 + 변경]
+- **G10 SSO 기관에서도 연결** — 대부분의 고객 기관이 SSO로 로그인하므로, 패드는 비밀번호를 받지 않고
+  **로그인된 구노 웹에서 띄운 QR(일회용 연결 코드)로 연결**한다. [사용자 결정: 대부분 SSO 사용]
 
 ### 비목표 (이번 범위 밖)
 - 구노 → 패드 **내용** 내려받기(웹에서 만든 노트를 패드에서 이어 쓰기). 내려오는 것은 기준 정보뿐이다. [사용자 결정: 단방향]
@@ -61,6 +63,7 @@
 - 가져온(굿노트 등) 내용이 패드에서 그 시각에 직접 쓴 것처럼 보인다(출처 구분 없음).
 - 알림이 너무 잦아 다들 끄고 무시한다.
 - 고객 기관마다 앱을 따로 빌드해야 한다.
+- SSO를 쓰는 기관에서 패드를 연결할 수 없다.
 
 ## 4. 이미 있는 것 (그대로 쓴다)
 
@@ -78,8 +81,12 @@
 - 웹 쪽: Goono-ELN·redwit-editor의 `claude/handwriting-editor-integration-check-ktdg1j` 브랜치에
   앱이 올린 페이지 노트를 웹 에디터에서 여는 작업이 있다.
 
-**프로젝트 선택**은 기존대로 패드에서 한다(구노에서 프로젝트 목록만 받아 옴). **계정 연결**도 기존대로 패드에서
-구노 아이디·비밀번호로 로그인해 기기 토큰을 받는다. [Claude 판단 — 대화에서 추천했고 사용자가 반대하지 않음]
+**프로젝트 선택**은 기존대로 패드에서 한다(구노에서 프로젝트 목록만 받아 옴). [Claude 판단 — 대화에서 추천했고
+사용자가 반대하지 않음]
+
+**바뀌는 것 — 계정 연결**: 기존 앱은 패드에서 구노 아이디·비밀번호로 로그인한다. 대부분의 고객 기관이 SSO를 쓰므로
+이 방식은 기본 경로에서 빼고 **QR 연결**(§6.0)로 바꾼다. 비밀번호 로그인은 서버 설정으로 켤 수 있는 보조 경로로만
+남긴다(기본 꺼짐, 개발·모의 서버용). [사용자 결정: 대부분 SSO / 방식은 Claude 판단]
 
 ## 5. 전체 구조
 
@@ -92,6 +99,16 @@
 ```
 
 ## 6. 태블릿 앱 변경
+
+### 6.0 기기 연결 — QR (G10)
+- 연구원이 PC나 패드 브라우저로 구노 웹에 평소처럼(SSO 포함) 로그인 → "태블릿 연결" → 화면에 QR과 8자리 연결 코드.
+- 패드 앱의 첫 화면은 "QR로 연결". 카메라로 QR을 읽으면 **서버 주소와 연결 코드를 함께** 받으므로 주소를 입력할 필요가
+  없다. 카메라를 쓸 수 없으면 서버 주소 + 연결 코드를 직접 입력한다.
+- QR 내용 예: `goono-note://pair?server=https://eln.example.ac.kr&code=K7Q2-M9XD`. 연결 코드는 **일회용, 5분 유효**.
+- 토큰 기한(오프라인 작성 기한, 기본 14일)이 지났거나 기기가 사용 중지된 뒤 다시 쓰려면 같은 QR 연결을 다시 한다.
+  같은 계정으로 다시 연결하면 기기 데이터를 이어 쓰고 대기 기록을 올린다(기존 "재로그인" 규칙과 같음).
+  다른 계정이면 기존 규칙대로 올리지 않은 기록이 있는 한 거부한다.
+- 앱 안의 "서버 없이 체험하기"(데모)는 유지한다.
 
 ### 6.1 굿노트·에버노트 가져오기 (G4)
 - **받는 길 3개**: iOS 공유 시트(Share Extension 타깃 추가, App Group 공유 컨테이너에 파일을 두고 본 앱이 열릴 때
@@ -140,9 +157,21 @@
 
 ## 7. 구노 서버(Goono-ELN) 변경
 
+### 7.0 대상 코드 라인: `main` [사용자 결정]
+서버 작업은 Goono-ELN `main` 기준이다. 웹 손글씨 연동은 공통 이력이 없는 KBSI 계열 브랜치
+(`claude/handwriting-editor-integration-check-ktdg1j`)에만 있으므로, **먼저 `main`으로 이식**한다.
+그대로 복사하지 말고 `main`의 현재 코드에 맞춰 옮긴다.
+
+| 이식할 것 | KBSI 계열 커밋 | 비고 |
+|---|---|---|
+| 웹 에디터 손글씨 블록(보기·편집), `static/lib/handdrawing/*`, `note_details_editor.html` | 897f1d32d, 8fe8d5400, d08093b98, a830506ae | `lib/handdrawing`은 handdrawing 저장소의 `js/`·`index.html`·`styles.css` 최신본에서 다시 복사 |
+| 읽기 권한 뷰어 모드 전환, 손글씨 PNG 업로드 경로 | c21c03979 | `ElnPermissionService`, `ElnNoteEditorController` |
+| Synap PDF 변환 시 본문 이미지 내장(`EditorHtmlImageInliner`) + 손글씨 페이지 나눔, 이미지 크기 속성 | 2e507ea10, 0ad7f510d | **이게 없으면 시점인증 PDF에서 손글씨가 빠진다.** 테스트 포함 |
+| `static/lib/standalone/editor-ai.standalone.js` | 위 커밋들 | 복사하지 말고 redwit-editor에서 다시 빌드: redwit-editor `claude/handwriting-editor-integration-check-ktdg1j`(redwit-editor `main` 기반, 5커밋)을 반영한 번들. `main`의 번들에 이미 들어간 다른 변경(PDF 뷰어 등)이 빠지지 않게 한다 |
+
 ### 7.1 기기 API — `SYNC-API.md` v1 구현
 - **별도 Spring Security 필터 체인**을 `/api/app/v1/**`에 더 높은 순서로 둔다: 세션 없음(stateless),
-  `Authorization: Bearer` 토큰 필터, `/devices/register`만 익명 허용, 나머지는 **인증 필수**.
+  `Authorization: Bearer` 토큰 필터, `/devices/pair`(와 켜져 있을 때의 `/devices/register`)만 익명 허용, 나머지는 **인증 필수**.
   토큰이 맞으면 기존 서비스가 그대로 동작하도록 `UserDetailsVO`를 `Authentication.details`에 넣는다
   (`SessionHelper.getUserMno()`가 이 값을 읽는다). 기존 체인의 `maximumSessions(1)`에 걸리지 않아야 한다.
 - 기존 `AuthorizationChecker`는 `/api/`로 시작하면 무조건 통과시키므로(§9.4), 새 체인이 이 경로를 먼저
@@ -150,7 +179,8 @@
 - 토큰: 256비트 난수, DB에는 SHA-256 해시만 저장. 테이블은 아무 데서도 안 쓰는 기존 `PL_AUTH_TOKENS`
   (TOKEN, DEVICE_ID 유니크, USER_ID, EXPIRED_DT, USER_AGENT, HASH)를 재사용하거나 `SYNC-API.md`의
   `PL_APP_DEVICE`를 새로 만든다 — 빌더 판단.
-- `/devices/register`에 로그인 시도 제한(아이디·IP 기준). 구노 웹 로그인에는 잠금이 없다.
+- `/devices/pair`·`/devices/register`에 시도 제한(IP·코드 기준, 연결 코드는 틀린 시도 5회면 폐기). 구노 웹 로그인에는 잠금이 없다.
+- `/devices/register`(아이디·비밀번호)는 `app.device.password-login.enabled`(기본 false)일 때만 연다.
 - CORS는 앱 웹뷰 오리진(`capacitor://localhost`, `https://localhost`)을 명시한다.
 - 업로드 크기: nginx `client_max_body_size 60M`(`deploy/etc/nginx/conf.d/goono.conf`)보다 버전 하나가 커지지
   않게 정책 `maxImageBytes`와 맞춘다. 넘으면 413 `TOO_LARGE`.
@@ -162,6 +192,8 @@
 ### 7.2 이번 설계로 추가되는 API
 | API | 내용 |
 |---|---|
+| `POST /api/eln/app/pairing-code` (신규, **웹 세션**) | 로그인한 사용자에게 일회용 연결 코드 발급 `{ code, qrPayload, expiresAt }`. 서버에는 코드 해시·사용자·만료만 저장. 새로 발급하면 그 사용자의 이전 미사용 코드는 폐기 |
+| `POST /api/app/v1/devices/pair` (신규, 익명) | 요청 `{ pairingCode, device{ id, name, platform, model, appVersion } }` → 응답은 기존 `/devices/register`와 같은 형식(token, tokenExpiresAt, offlineGraceDays, user, serverTime). 코드는 한 번 쓰면 폐기. 오류: 401 `INVALID_PAIRING_CODE`(없음·만료·사용됨), 403 `DEVICE_NOT_ALLOWED`, 429 |
 | `GET /bootstrap` 확장 | 프로젝트마다 `designatedInspectors`(웹 `/api/eln/project/note-inspctn-info`의 자동 선택 규칙 재사용), `policy.inspectionCycleDays`, `policy.selfInspectorAllowed`(서버 라인의 기존 규칙) 추가. 사용자 전체 목록은 내려주지 않는다 |
 | `GET /inspectors?keyword=` (신규) | 온라인일 때 점검자 이름 검색 — 웹 `/api/system/user/inspectionUserList`와 같은 대상·같은 필수 검색어 규칙 |
 | `GET /notes` 확장 | 노트마다 `inspection: { status, requestedAt, completedAt }`, `lastTimestampAt`, `continuesNoteMno` |
@@ -172,6 +204,7 @@
 
 ### 7.3 웹 화면
 - 편집 위치가 `DEVICE`인 노트: 읽기 전용 + "○○ 기기에서 작성 중 · 마지막 동기화 시각", **웹의 점검 요청 거부**. [기존 SYNC-API 규칙]
+- **태블릿 연결 화면**: QR·연결 코드·남은 시간 표시, 코드 다시 발급. 기기 관리 화면과 같은 곳에 둔다.
 - 기기 관리(내 기기 목록·사용 중지), 편집권 회수(사유 기록). [기존 SYNC-API 규칙]
 - 노트 상세에 이어 쓰기 연결("이전 노트 / 다음 노트") 표시, 가져온 페이지의 출처 표시.
 - 패드에서 올라온 노트는 `note.editor.provider.se` 설정(기본 `synap`)과 상관없이 손글씨 블록이 제대로 보여야 한다
@@ -180,13 +213,16 @@
 ### 7.4 점검 유도 (G5·G6)
 - 정책은 기존 방식대로 `config/eln.properties`에 둔다 [Claude 판단]:
   `note.inspection.cycle.days`(기본 7), `note.inspection.remind.after.days`(점검자 재알림 기준, 기본 3),
-  `app.device.enabled`, `app.device.offline-grace-days`(기본 14).
+  `note.inspection.nudge.since`, `note.timestamp.since`, `app.device.enabled`, `app.device.offline-grace-days`(기본 14),
+  `app.device.password-login.enabled`(기본 false).
 - **점검자 알림**: 점검 요청이 오면 기존 사용자 알림(`PL_USER_NOTI`) + 웹 푸시(`system/serviceworker`)로 알린다
   (기존 요청 알림이 이미 있으면 그대로). 승인 대기 `remind.after.days`를 넘으면 하루 한 번 재알림 — 신규 스케줄러.
 - **연구원 웹 대시보드**: "점검 기한이 지난 내 노트" 목록.
 - **연구책임자·관리자**: 프로젝트별 "점검 기한 지난 노트 수", "승인 대기가 오래된 요청" 현황 목록.
-- 점검 기한 계산은 앱과 같은 규칙(§6.2)을 쓴다. 웹 대시보드·현황은 노트 출처(웹/앱)와 상관없이 전체 노트에 적용한다
-  [Claude 판단 — §11 확인 필요].
+- **유도 기능은 노트 출처(웹/앱)와 상관없이 구노 전체 노트에 적용한다.** [사용자 결정] 점검 기한 계산은 앱과 같은
+  규칙(노트 생성 시각 + 주기, §6.2)을 쓴다. 기존에 작성 중이던 노트가 첫날 한꺼번에 "기한 지남"이 되지 않도록
+  `note.inspection.nudge.since`(기본값은 배포일) 이후 생성된 노트만 센다. [Claude 판단]
+- 웹에서 쓴 노트의 연구원 알림은 웹 사용자 알림·웹 푸시로 하루 한 번 묶어서 보낸다(패드와 같은 규칙).
 
 ### 7.5 시점인증 누락 수정 (G7)
 - `elnNote-mapper.xml`의 `selectListConfirmOKConvertPDF`가 `INSPCTN_COMPLETE_DT >= NOW() - 1일` 조건 때문에
@@ -207,7 +243,7 @@
 ## 9. 보안
 1. 기기 토큰은 웹 세션과 분리, 해시 저장, 사용 중지 가능. [기존 설계]
 2. 기기 토큰으로 내려받을 수 있는 것은 기준 정보와 노트 상태뿐, 노트 내용은 없음.
-3. 패드 경로에서 본인 점검자 지정 차단(§7.2), `/devices/register` 시도 제한(§7.1).
+3. 패드 경로의 본인 점검자 규칙(§7.2). 연결 코드는 일회용·5분·해시 저장·시도 제한, 비밀번호는 기본 경로에서 받지 않음(§6.0, §7.1).
 4. **기존 구노 웹 API의 인증 구멍(범위 밖, 보고만)**: `framework/security/service/AuthorizationChecker.java:35-37`이
    `/api/`로 시작하는 요청을 로그인 여부와 무관하게 통과시킨다. 각 서비스가 세션 사용자를 확인하는 데 기대고 있어,
    예를 들어 프로젝트 없는 노트 생성은 DB NOT NULL 제약 외에는 막는 장치가 없다. 새 `/api/app/v1`은 §7.1의
@@ -216,25 +252,25 @@
 ## 10. 검증
 - 앱: 기존 단위·E2E 유지 + 가져오기(PDF 여러 쪽, 이미지, 웹 편집 후에도 배경 유지), 점검 받기(온라인/오프라인 대기), 본인 점검자 규칙,
   이어 쓰기 연결, 점검 기한 표시·알림 규칙 단위 테스트.
-- 서버: `/api/app/v1` 통합 테스트(인증 필수, 세션 미생성, 멱등, 해시 불일치, 본인 점검자, 편집 위치).
-  **계약 테스트**: 기존 E2E 시나리오를 모의 서버 대신 실제 Goono-ELN 개발 서버에 돌려 통과해야 한다.
+- 서버: `/api/app/v1` 통합 테스트(인증 필수, 세션 미생성, 멱등, 해시 불일치, 본인 점검자, 편집 위치, 연결 코드
+  일회성·만료·시도 제한). `EditorHtmlImageInlinerTest` 등 이식한 테스트 포함.
+- **계약 테스트**: 기존 E2E 시나리오를 모의 서버 대신 실제 Goono-ELN 개발 서버에 돌려 통과해야 출시할 수 있다.
+  개발 서버는 있으나 지금은 접속 정보가 없다 [사용자 답변]. 그래서 개발은 로컬에서 서버를 빌드·실행(MariaDB 컨테이너 등)해
+  통합 테스트까지 하고, 개발 서버 계약 테스트는 접속 정보를 받는 대로 출시 전 관문으로 돌린다. 로컬 빌드가 막히면
+  (이전 세션: Maven Central 429, 사설 패키지 저장소 인증) 그 사실과 실행하지 못한 검증 목록을 남긴다.
 - 스케줄러: 하루 넘게 처리 못 한 COMPLETE 노트가 시점인증되는지, TSA 실패 재시도 간격.
 - 실기기: iPad + Apple Pencil, 갤럭시 탭 + S Pen (`app/README.md` 목록).
 
-## 11. 사용자 확인이 필요한 것
-1. **서버 코드 라인과 첫 고객**: 서버 작업에 필요한 코드가 서로 공통 이력이 없는 두 줄기에 나뉘어 있다.
-   - `main`에만: 자기 점검 설정(`note.inspection.exclude-self.enabled`), 프로젝트 유예 기간 등 최신 기능.
-   - KBSI 계열 작업 브랜치에만: 웹의 손글씨 블록 보기·편집(editor-ai), Synap PDF 변환 시 본문 이미지 누락 수정
-     (`EditorHtmlImageInliner`, 커밋 2e507ea10). **`main` 그대로라면 시점인증 PDF에서 손글씨가 빠진다.**
-   어느 쪽이든 한 방향으로 큰 이식이 필요하고, 두 줄기를 모두 쓰는 고객이 있으면 서버 작업을 두 번 해야 한다.
-   SSO 로그인을 쓰는 기관이 첫 대상에 있으면 아이디·비밀번호 로그인 대신 QR 연결 같은 대안이 v1에 필요하다.
-2. **점검 유도 범위**: 웹 대시보드·점검자 재알림·관리자 현황을 패드 노트에만 적용할지, 웹 노트까지 구노 전체에
-   적용할지. 전체라면 기존의 WRITING 노트가 첫날 모두 "기한 지남"이 되지 않도록 배포일 이후 생성된 노트만 센다.
-3. **개발 환경**: §10의 계약 테스트와 FILE_ID·Synap PDF·스케줄러 검증에는 실제로 돌아가는 Goono-ELN 개발 서버가
-   필요하다. 이전 세션은 서버를 빌드하지 못했다(Maven Central 429, 사설 패키지 저장소 인증 필요).
+## 11. 리뷰 후 사용자 답변 (2026-10-17)
+1. 서버 코드 라인은 **`main`**. 웹 손글씨 연동을 먼저 `main`으로 이식한다(§7.0).
+2. 고객 기관 **대부분이 SSO** → 패드는 QR 연결(§6.0).
+3. 점검 유도는 **구노 전체 노트**에 적용(§7.4).
+4. 개발 서버는 있으나 지금은 접속 정보가 없음 → 로컬 검증 후 출시 전 관문으로 계약 테스트(§10).
 
 ## 11-1. 작성자가 정한 것 (확인용)
-- 프로젝트는 패드에서 고른다, 계정 연결은 아이디·비밀번호(§4). 1인 1대.
+- 프로젝트는 패드에서 고른다(§4). 1인 1대.
+- QR 연결: 일회용 8자리 코드, 5분 유효, 틀린 시도 5회면 폐기. 비밀번호 로그인은 설정으로만 켜는 보조 경로(§6.0, §7.1).
+- 유도 집계는 배포일 이후 생성된 노트만(§7.4).
 - 자기 점검 허용 여부는 서버 라인의 기존 규칙을 따른다(§3).
 - 점검 기한은 노트 생성 시각 기준, 알림은 하루 한 번 묶어서(§6.2).
 - 점검자 후보: 지정 점검자 + 최근 고른 사람 + 온라인 검색, 전체 목록은 기기에 두지 않음(§6.2).
@@ -246,5 +282,6 @@
 ## 12. 빌더에게 맡기는 것
 - `PL_AUTH_TOKENS` 재사용 vs 신규 테이블, 재시도·멱등용 테이블 구조.
 - PDF 렌더러 선택·해상도, Share Extension 구현 방식(Capacitor 플러그인 또는 직접 작성), 쪽수·크기 상한.
+- QR 스캐너 플러그인(폐쇄망에서 동작해야 함 — 모델을 내려받는 방식은 피한다), 연결 코드 문자 구성.
 - 알림·안내 문구, 화면 배치, 재시도 간격, 스케줄러 배치 크기.
 - 패드 노트를 Synap 설정 기관에서 보여 주는 방법(§7.3), FILE_ID 생성 방법(§7.1).
