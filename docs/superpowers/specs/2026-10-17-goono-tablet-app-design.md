@@ -179,7 +179,7 @@
 - 토큰: 256비트 난수, DB에는 SHA-256 해시만 저장. 테이블은 아무 데서도 안 쓰는 기존 `PL_AUTH_TOKENS`
   (TOKEN, DEVICE_ID 유니크, USER_ID, EXPIRED_DT, USER_AGENT, HASH)를 재사용하거나 `SYNC-API.md`의
   `PL_APP_DEVICE`를 새로 만든다 — 빌더 판단.
-- `/devices/pair`·`/devices/register`에 시도 제한(IP·코드 기준, 연결 코드는 틀린 시도 5회면 폐기). 구노 웹 로그인에는 잠금이 없다.
+- `/devices/pair`·`/devices/register`에 시도 제한: 같은 IP에서 10분 안에 5번 실패하면 429(`Retry-After`). 틀린 코드는 어느 코드에 대한 시도인지 알 수 없으므로 코드 단위가 아니라 IP 단위로 막는다. 구노 웹 로그인에는 잠금이 없다. [2단계 계획에서 구체화]
 - `/devices/register`(아이디·비밀번호)는 `app.device.password-login.enabled`(기본 false)일 때만 연다.
 - CORS는 앱 웹뷰 오리진(`capacitor://localhost`, `https://localhost`)을 명시한다.
 - 업로드 크기: nginx `client_max_body_size 60M`(`deploy/etc/nginx/conf.d/goono.conf`)보다 버전 하나가 커지지
@@ -269,7 +269,7 @@
 
 ## 11-1. 작성자가 정한 것 (확인용)
 - 프로젝트는 패드에서 고른다(§4). 1인 1대.
-- QR 연결: 일회용 8자리 코드, 5분 유효, 틀린 시도 5회면 폐기. 비밀번호 로그인은 설정으로만 켜는 보조 경로(§6.0, §7.1).
+- QR 연결: 일회용 8자리 코드, 5분 유효, 같은 IP 10분 5회 실패 시 429. 비밀번호 로그인은 설정으로만 켜는 보조 경로(§6.0, §7.1). `app.device.enabled` 기본값은 꺼짐(기관이 켜야 사용).
 - 유도 집계는 배포일 이후 생성된 노트만(§7.4).
 - 자기 점검 허용 여부는 서버 라인의 기존 규칙을 따른다(§3).
 - 점검 기한은 노트 생성 시각 기준, 알림은 하루 한 번 묶어서(§6.2).
