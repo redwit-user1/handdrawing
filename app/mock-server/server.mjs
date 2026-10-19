@@ -220,7 +220,8 @@ api.post('/notes', auth, (req, res) => {
 
 api.post('/notes/:noteMno/versions', auth, upload.any(), (req, res) => {
   const note = state.notes.get(Number(req.params.noteMno));
-  if (!note) return err(res, 404, 'NOT_FOUND', '노트가 없습니다.');
+  // 남의 노트는 있는지도 알려 주지 않는다(404). 409 NOT_EDIT_OWNER 는 내 노트인데 편집 위치가 이 묶음이 아닐 때
+  if (!note || note.ownerMno !== req.user.userMno) return err(res, 404, 'NOT_FOUND', '노트가 없습니다.');
   let meta;
   try { meta = JSON.parse(req.body.meta || '{}'); } catch { return err(res, 400, 'BAD_REQUEST', 'meta JSON 오류'); }
   const noteContent = String(req.body.noteContent ?? '');
@@ -273,7 +274,7 @@ api.post('/notes/:noteMno/versions', auth, upload.any(), (req, res) => {
 
 api.post('/notes/:noteMno/release', auth, (req, res) => {
   const note = state.notes.get(Number(req.params.noteMno));
-  if (!note) return err(res, 404, 'NOT_FOUND', '노트가 없습니다.');
+  if (!note || note.ownerMno !== req.user.userMno) return err(res, 404, 'NOT_FOUND', '노트가 없습니다.');
   if (!ownsNote(req, note)) {
     return err(res, 409, 'NOT_EDIT_OWNER', '이 기기에 편집권이 없습니다.', { status: note.status, editLocation: note.editLocation });
   }
