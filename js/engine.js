@@ -640,14 +640,17 @@ class DrawingEngine {
 
     const w = this.screenToWorld(x, y);
 
-    // 손가락(손가락으로 쓰기 꺼짐): 선택 영역 안에서 끌면 옮기기, 짧게 누르면 지금 도구의 탭, 끌면 화면 넘기기
-    if (e.pointerType === 'touch') {
-      const act = fingerDownAction({ tool: this.tool, touchDraws: this.touchDraws, inSelection: this._selectionContains(w.x, w.y) });
-      if (act === 'move') { this._startSelMove(e, w); return; }
-      if (act === 'tap') {
-        this.drawing = { fingerTap: true, pointerId: e.pointerId, pointerType: e.pointerType, sx: x, sy: y, t0: performance.now(), wx: w.x, wy: w.y };
-        return;
-      }
+    // 손가락(손가락으로 쓰기 꺼짐): 움직임을 보고 정한다 — 짧게 누르면 지금 도구의 탭, 선택 영역 안에서 10px 넘게
+    // 끌면 옮기기, 그 밖은 화면 넘기기. 손바닥으로 의심되면(펜을 막 썼거나 닿은 면이 넓음) 넘기기만 한다
+    if (e.pointerType === 'touch' && fingerDownAction({ tool: this.tool, touchDraws: this.touchDraws }) === 'finger') {
+      const now = performance.now();
+      this.drawing = {
+        fingerTap: true, pointerId: e.pointerId, pointerType: e.pointerType,
+        sx: x, sy: y, t0: now, wx: w.x, wy: w.y,
+        inSel: this._selectionContains(w.x, w.y),
+        palm: isPalmSuspect({ penDown: this._penPointerActive(), sincePen: now - this.penLastSeen, width: e.width, height: e.height }),
+      };
+      return;
     }
 
     // 올가미 도구: 선택 영역 안이면 이동, 밖이면 새 올가미
@@ -745,23 +748,24 @@ class DrawingEngine {
     const w = this.screenToWorld(x, y);
 
     if (d.fingerTap) {
-      // 많이 움직이면 탭이 아니라 화면 넘기기 — 누른 곳부터 따라오도록 움직인 만큼 바로 반영
-      if (touchIntent(Math.hypot(x - d.sx, y - d.sy), 0, false) === 'pan') {
-        this.drawing = null;
-        this.gesture = { mode: 'pan', lastX: d.sx, lastY: d.sy, pointerId: e.pointerId };
-        this.canvas.classList.add('dragging');
-        this._updateGesture(e, x, y);
+      // 10px 넘게 움직이면: 선택 영역 안(손바닥 아님) → 옮기기, 그 밖 → 화면 넘기기.
+      // 누른 곳부터 따라오도록 그때까지 움직인 만큼 바로 반영한다
+      const out = fingerOutcome({
+        dist: Math.hypot(x - d.sx, y - d.sy), ms: 0, ended: false,
+        inSelection: d.inSel, palm: d.palm || this.penLastSeen > d.t0,
+      });
+      if (out === 'move') {
+        this._startSelMove(e, { x: d.wx, y: d.wy });
+        this._selMoveTo(this.drawing, w);
+      } else if (out === 'pan') {
+        this._panFromTouchDown(e, d, x, y);
       }
       return;
     }
 
     if (d.textTap) {
-      // 많이 움직이면 탭이 아니라 스크롤로 본다
-      if (Math.hypot(x - d.sx, y - d.sy) > 10) {
-        this.drawing = null;
-        this.gesture = { mode: 'pan', lastX: x, lastY: y, pointerId: e.pointerId };
-        this.canvas.classList.add('dragging');
-      }
+      // 많이 움직이면 탭이 아니라 스크롤로 본다 (누른 곳부터 따라오도록)
+      if (touchIntent(Math.hypot(x - d.sx, y - d.sy), 0, false) === 'pan') this._panFromTouchDown(e, d, x, y);
       return;
     }
 
@@ -788,15 +792,7 @@ class DrawingEngine {
     }
 
     if (d.selMove) {
-      const dx = w.x - d.lastWX, dy = w.y - d.lastWY;
-      if (dx === 0 && dy === 0) return;
-      d.lastWX = w.x; d.lastWY = w.y;
-      d.totalDx += dx; d.totalDy += dy;
-      for (const s of this.selection.strokes) translateStroke(s, dx, dy);
-      const b = this.selection.bbox;
-      b.minX += dx; b.maxX += dx; b.minY += dy; b.maxY += dy;
-      this.requestRender(true);
-      this._emitSelection();
+      this._selMoveTo(d, w);
       return;
     }
 
@@ -835,9 +831,20 @@ class DrawingEngine {
 
     if (d.fingerTap) {
       this.drawing = null;
-      if (e.type === 'pointercancel') return;
+      if (e.type === 'pointercancel') return; // iPadOS 가 손바닥을 걸러 낼 때 보낸다
       const { x, y } = this._pos(e);
-      if (touchIntent(Math.hypot(x - d.sx, y - d.sy), performance.now() - d.t0, true) === 'tap') this._fingerTap(d.wx, d.wy);
+      const out = fingerOutcome({
+        dist: Math.hypot(x - d.sx, y - d.sy), ms: performance.now() - d.t0, ended: true,
+        inSelection: d.inSel, palm: d.palm || this.penLastSeen > d.t0,
+      });
+      if (out === 'tap') this._fingerTap(d.wx, d.wy);
+      return; // 'keep'(선택 안 탭 → 선택 유지)·'none'(손바닥 의심·길게 누름)은 아무것도 하지 않는다
+    }
+
+    // 손가락으로 옮기던 중 시스템이 취소하면(손바닥 거르기 등) 옮긴 것을 되돌린다
+    if (d.selMove && d.pointerType === 'touch' && e.type === 'pointercancel') {
+      this._revertSelMove(d);
+      this.drawing = null;
       return;
     }
 
@@ -924,6 +931,37 @@ class DrawingEngine {
     };
   }
 
+  /** 진행 중인 옮기기: 선택한 것을 월드 좌표 w 까지 */
+  _selMoveTo(d, w) {
+    const dx = w.x - d.lastWX, dy = w.y - d.lastWY;
+    if (dx === 0 && dy === 0) return;
+    d.lastWX = w.x; d.lastWY = w.y;
+    d.totalDx += dx; d.totalDy += dy;
+    this._translateSelection(dx, dy);
+  }
+
+  _translateSelection(dx, dy) {
+    for (const s of this.selection.strokes) translateStroke(s, dx, dy);
+    const b = this.selection.bbox;
+    b.minX += dx; b.maxX += dx; b.minY += dy; b.maxY += dy;
+    this.requestRender(true);
+    this._emitSelection();
+  }
+
+  /** 진행 중인 옮기기를 없던 일로 (실행 취소 기록 없음) */
+  _revertSelMove(d) {
+    if (this.selection && (d.totalDx !== 0 || d.totalDy !== 0)) this._translateSelection(-d.totalDx, -d.totalDy);
+    d.totalDx = 0; d.totalDy = 0;
+  }
+
+  /** 손가락 탭·글상자 탭이 10px 넘게 움직였다 → 누른 곳부터 화면 넘기기 */
+  _panFromTouchDown(e, d, x, y) {
+    this.drawing = null;
+    this.gesture = { mode: 'pan', lastX: d.sx, lastY: d.sy, pointerId: e.pointerId };
+    this.canvas.classList.add('dragging');
+    this._updateGesture(e, x, y);
+  }
+
   /** 손가락 탭 (손가락으로 쓰기 꺼짐) — 올가미: 누른 객체 선택, 글상자: 글상자 열기 */
   _fingerTap(wx, wy) {
     if (this.tool === 'lasso') {
@@ -941,12 +979,15 @@ class DrawingEngine {
 
   /**
    * 진행 중인 손가락 입력을 정리한다 (두 번째 손가락·펜이 끼어들 때).
-   * 옮기기·지우기는 그때까지를 확정(실행 취소 가능)하고, 획·올가미·탭은 버린다.
+   * 지우기는 그때까지를 확정(실행 취소 가능)하고, 획·올가미·탭은 버린다.
+   * 옮기기: 두 번째 손가락(핀치)이면 확정, 펜이 닿은 것(revertMove — 손바닥이었다)이면 되돌린다.
    */
-  _settleTouchDrawing() {
+  _settleTouchDrawing({ revertMove = false } = {}) {
     const d = this.drawing;
     if (!d || d.pointerType !== 'touch') return;
-    if (d.selMove && (d.totalDx !== 0 || d.totalDy !== 0)) {
+    if (d.selMove && revertMove) {
+      this._revertSelMove(d);
+    } else if (d.selMove && (d.totalDx !== 0 || d.totalDy !== 0)) {
       this._pushUndo({ type: 'move', strokes: this.selectedStrokes(), dx: d.totalDx, dy: d.totalDy });
       this._emitChange(true);
     } else if (d.erasing && this.erasedInDrag.length > 0) {
@@ -963,7 +1004,7 @@ class DrawingEngine {
     const dropped = [];
     for (const [id, p] of this.pointers) if (p.type === 'touch') dropped.push(id);
     if (!dropped.length) return;
-    this._settleTouchDrawing();
+    this._settleTouchDrawing({ revertMove: true });
     for (const id of dropped) {
       this.pointers.delete(id);
       try { this.canvas.releasePointerCapture(id); } catch (_) {}
@@ -1933,21 +1974,47 @@ function defaultPageLayout(date, paper) {
 
 /** 상자 모양 객체(지우개로 지우지 않고, 올가미로 옮긴다) */
 /* ── 손가락 입력 판정 (손가락으로 쓰기가 꺼져 있을 때 손가락 한 개) ── */
-const TOUCH_TAP_SLOP = 10;   // 화면 px — 이보다 많이 움직이면 탭이 아니라 화면 넘기기
+const TOUCH_TAP_SLOP = 10;   // 화면 px — 이보다 많이 움직이면 탭이 아니라 옮기기·화면 넘기기
 const TOUCH_TAP_MS = 500;    // 이보다 오래 누르고 있다 떼면 탭으로 보지 않는다
+const PEN_GUARD_MS = 1500;   // 펜을 쓴 뒤 이 시간 안에 닿은 손가락은 손바닥으로 의심 (탭·옮기기 없음, 넘기기만)
+const PALM_CONTACT_PX = 40;  // 닿은 면(PointerEvent width/height, CSS px)이 이보다 넓으면 손바닥으로 의심
 
 /**
  * 손가락이 닿았을 때 할 일
- *   'pan'  화면 넘기기 (읽기 전용·이동 도구)
- *   'tool' 지금 도구로 바로 입력 (손가락으로 쓰기 켜짐 = 펜과 같다)
- *   'move' 선택 영역 안에서 시작 → 선택한 것 옮기기
- *   'tap'  탭인지 넘기기인지 움직임을 보고 정한다 (touchIntent)
+ *   'pan'    화면 넘기기 (읽기 전용·이동 도구)
+ *   'tool'   지금 도구로 바로 입력 (손가락으로 쓰기 켜짐 = 펜과 같다)
+ *   'finger' 탭·옮기기·넘기기를 움직임을 보고 정한다 (fingerOutcome)
  */
-function fingerDownAction({ readonly = false, tool, touchDraws, inSelection = false }) {
+function fingerDownAction({ readonly = false, tool, touchDraws }) {
   if (readonly || tool === 'pan') return 'pan';
   if (touchDraws) return 'tool';
-  if (inSelection) return 'move';
-  return 'tap';
+  return 'finger';
+}
+
+/**
+ * 손바닥 의심: 펜이 닿아 있음 / 펜을 쓴 지 PEN_GUARD_MS 안 / 손가락이 닿은 뒤 펜이 움직임 / 닿은 면이 넓음.
+ * 닿은 면은 보조 신호 — 값을 주지 않는 기기(1 이하)는 보지 않는다.
+ */
+function isPalmSuspect({ penDown = false, sincePen = Infinity, penAfterTouch = false, width = 0, height = 0 }) {
+  if (penDown || penAfterTouch || sincePen < PEN_GUARD_MS) return true;
+  return (width > 1 && width > PALM_CONTACT_PX) || (height > 1 && height > PALM_CONTACT_PX);
+}
+
+/**
+ * 손가락 한 개의 결과
+ *   'pending' 아직 모름 (10px 안에서 누르고 있음)
+ *   'move'    선택 영역 안에서 10px 넘게 끔 → 옮기기 (손바닥 의심이면 넘기기)
+ *   'pan'     10px 넘게 끔 → 화면 넘기기
+ *   'tap'     짧게 누르고 뗌 → 지금 도구의 탭
+ *   'keep'    선택 영역 안을 짧게 누름 → 선택 유지 (아무것도 안 함)
+ *   'none'    손바닥 의심·오래 누름 → 아무것도 안 함
+ */
+function fingerOutcome({ dist, ms, ended, inSelection = false, palm = false }) {
+  const intent = touchIntent(dist, ms, ended);
+  if (intent === 'pan') return inSelection && !palm ? 'move' : 'pan';
+  if (intent === 'pending') return 'pending';
+  if (palm || intent === 'hold') return 'none';
+  return inSelection ? 'keep' : 'tap';
 }
 
 /** 손가락 한 개의 움직임 판정: 'pan'(많이 움직임) | 'pending'(아직 모름) | 'tap'(짧게 누르고 뗌) | 'hold'(오래 누르고 뗌) */
@@ -2127,6 +2194,6 @@ if (typeof window !== 'undefined') {
   window.DrawingEngine = DrawingEngine;
   window.HandDrawing = {
     DrawingEngine, defaultPageLayout, normalizePageLayout, A4_BODY_ASPECT, PAPERS, PAPER_DEFAULT, paperSpec,
-    input: { fingerDownAction, touchIntent, TOUCH_TAP_SLOP, TOUCH_TAP_MS },
+    input: { fingerDownAction, fingerOutcome, isPalmSuspect, touchIntent, TOUCH_TAP_SLOP, TOUCH_TAP_MS, PEN_GUARD_MS, PALM_CONTACT_PX },
   };
 }

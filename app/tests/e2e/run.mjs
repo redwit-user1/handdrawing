@@ -618,7 +618,18 @@ try {
       await T('touchEnd', []);
     };
     const samePts = (a, b) => a.every((p, i) => Math.abs(p[0] - b[i][0]) < 0.01 && Math.abs(p[1] - b[i][1]) < 0.01);
-    const settle = () => page.waitForTimeout(700); // 펜을 쓴 뒤 0.6초 동안 손가락은 손바닥으로 보고 무시한다
+    // 펜을 쓴 뒤 1.5초 안에 닿은 손가락은 손바닥으로 의심(탭·옮기기 없음) — 손가락 동작을 볼 때는 그만큼 쉰다
+    const settle = () => page.waitForTimeout(1600);
+    /** 엔진 캔버스에 PointerEvent 를 직접 보낸다 (손바닥·펜 순서 재현). steps: [type, id, pointerType, clientX, clientY] | ms */
+    const pointerSeq = (steps) => page.evaluate(async (steps) => {
+      const c = window.__engine.canvas;
+      for (const st of steps) {
+        if (typeof st === 'number') { await new Promise((r) => setTimeout(r, st)); continue; }
+        const [type, id, ptype, x, y] = st;
+        c.dispatchEvent(new PointerEvent(type, { pointerId: id, pointerType: ptype, clientX: x, clientY: y, bubbles: true, cancelable: true,
+          pressure: 0.5, buttons: type === 'pointerup' || type === 'pointercancel' || (ptype === 'pen' && type === 'pointermove' && id === 99) ? 0 : 1, button: 0, isPrimary: true }));
+      }
+    }, steps);
     const tableCenter = () => page.evaluate(() => {
       const e = window.__engine, t = e.strokes.find((s) => s.tool === 'table'), r = e.canvas.getBoundingClientRect();
       const [[x0, y0], [x1, y1]] = t.points;
@@ -682,6 +693,44 @@ try {
     await tid('undo').click();
     assert(samePts((await tableCenter()).pts, t.pts), '실행 취소 → 제자리');
 
+    // 3-1) 선택 안을 누르고 10px 안에서 흔들리기만 하면 옮기지 않는다 (실행 취소 기록 없음, 선택 유지)
+    await page.evaluate(() => { const e = window.__engine; e.selectObject(e.strokes.find((s) => s.tool === 'table')); }); // 실행 취소가 선택을 푼다
+    s0 = await st();
+    assert(s0.sel === 1, '표 선택됨');
+    await fingerDrag(t.c, [t.c[0] + 6, t.c[1] + 5], 6);
+    s1 = await st();
+    assert(samePts((await tableCenter()).pts, t.pts) && s1.undo === s0.undo && s1.sel === 1, `흔들림은 옮기지 않음 (undo ${s0.undo}→${s1.undo}, sel ${s1.sel})`);
+
+    // 3-2) 손바닥이 선택한 표 위에 닿아 끌리다가 펜이 닿으면: 옮긴 것을 되돌린다 (표 그대로, 실행 취소 기록 없음)
+    await settle();
+    s0 = await st();
+    const far = [t.c[0] - 250, t.c[1] + 260];
+    await pointerSeq([['pointerdown', 61, 'touch', t.c[0], t.c[1]], 30,
+      ...[1, 2, 3, 4, 5, 6].map((i) => ['pointermove', 61, 'touch', t.c[0] + i * 6, t.c[1] + i * 5])]);
+    const movedByPalm = !samePts((await tableCenter()).pts, t.pts);
+    await pointerSeq([['pointerdown', 62, 'pen', far[0], far[1]], ['pointerup', 62, 'pen', far[0], far[1]],
+      ['pointermove', 61, 'touch', t.c[0] + 60, t.c[1] + 50], ['pointerup', 61, 'touch', t.c[0] + 60, t.c[1] + 50]]);
+    s1 = await st();
+    assert(movedByPalm, '(손바닥 끌기로 옮기기가 시작됐었다)');
+    assert(samePts((await tableCenter()).pts, t.pts), '펜이 닿으면 손바닥이 옮긴 표를 되돌림');
+    assert(s1.undo === s0.undo, `실행 취소 기록 없음 (${s0.undo}→${s1.undo})`);
+
+    // 3-3) 손가락으로 옮기던 중 시스템 취소(pointercancel — iPadOS 손바닥 거르기) → 되돌림
+    await page.evaluate(() => { const e = window.__engine; e.selectObject(e.strokes.find((s) => s.tool === 'table')); });
+    await settle();
+    s0 = await st();
+    await pointerSeq([['pointerdown', 63, 'touch', t.c[0], t.c[1]], ...[1, 2, 3, 4, 5].map((i) => ['pointermove', 63, 'touch', t.c[0] + i * 8, t.c[1]]),
+      ['pointercancel', 63, 'touch', t.c[0] + 40, t.c[1]]]);
+    s1 = await st();
+    assert(samePts((await tableCenter()).pts, t.pts) && s1.undo === s0.undo && !(await page.evaluate(() => !!window.__engine.drawing)), 'pointercancel → 되돌림, 기록 없음');
+
+    // 3-4) 펜을 쓴 직후(1.5초 안) 빈 곳 손가락 탭 = 손바닥 의심 → 선택이 풀리지 않는다
+    await pointerSeq([['pointermove', 99, 'pen', far[0], far[1]]]); // 펜 호버
+    await page.waitForTimeout(700); // 0.6초 손바닥 무시는 지났고 1.5초 안
+    await fingerTap([t.c[0], t.c[1] + 220]);
+    assert((await st()).sel === 1, '펜 직후 탭은 선택 해제하지 않음');
+    await settle();
+
     // 4) 선택 밖에서 끌면 화면 넘기기(표는 그대로), 빈 곳 탭 → 선택 해제
     t = await tableCenter();
     s0 = await st();
@@ -692,6 +741,7 @@ try {
     assert(samePts((await tableCenter()).pts, t.pts), '표는 그대로');
     await page.evaluate(() => window.__engine.fitWidth());
     t = await tableCenter();
+    assert((await st()).sel === 1, '넘기는 동안 선택 유지');
     await fingerTap([t.c[0], t.c[1] + 220]);
     assert((await st()).sel === 0, '빈 곳 탭 → 선택 해제');
 

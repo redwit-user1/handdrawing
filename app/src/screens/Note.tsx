@@ -199,7 +199,7 @@ export default function Note({ id, onBack, onOpen, onRelogin }: { id: string; on
         scheduleSaveRef.current();
       },
       onPenDetected() {
-        // 펜이 닿으면 손가락은 넘기기로 (손바닥 오입력 방지)
+        // 펜이 닿으면 손가락은 넘기기·선택으로 (손바닥 오입력 방지)
         engine.touchDraws = false;
         setPal((p) => (p.touchDraws ? { ...p, touchDraws: false } : p));
         savePref(TOUCH_PREF, false);

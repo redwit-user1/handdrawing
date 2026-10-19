@@ -170,7 +170,7 @@ export default function ToolPalette({ engine, state, onChange, orientation, onPh
 
       <span className="pal-sep" aria-hidden="true" />
 
-      <ToolButton label={state.touchDraws ? '손가락으로 쓰기 켜짐' : '손가락으로 쓰기 꺼짐 (손가락은 넘기기)'} active={state.touchDraws}
+      <ToolButton label={state.touchDraws ? '손가락으로 쓰기 켜짐' : '손가락으로 쓰기 꺼짐 (손가락은 넘기기·선택)'} active={state.touchDraws}
         onClick={() => onChange({ touchDraws: !state.touchDraws })} testId="tool-touch">
         <IcHand />
       </ToolButton>
