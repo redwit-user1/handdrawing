@@ -280,6 +280,7 @@ svg { flex: none; }
 .inline-ic { width: 16px; height: 16px; vertical-align: -3px; color: var(--accent-strong); }
 @keyframes hint-in { from { opacity: 0; transform: translate(-50%, -4px); } to { opacity: 1; transform: translate(-50%, 0); } }
 
+/* 자리는 Note.tsx 가 선택한 것 바로 위(없으면 아래)로 잡는다 — 아래 top·left 는 잡기 전 기본값 */
 .selection-bar {
   position: absolute; z-index: 7; top: 16px; left: 50%; transform: translateX(-50%); display: flex; gap: 8px; padding: 6px;
   background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-l); box-shadow: var(--shadow-float);

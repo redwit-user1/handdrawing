@@ -75,6 +75,14 @@ export interface Engine {
   editText(stroke: unknown): void;
   pageCount(): number;
   lastUsedPage(): number;
+  /** 객체가 화면에 다 보이지 않으면 가운데로 넘긴다 */
+  revealObject(stroke: Stroke): void;
+  /** 사진을 시계 방향으로 90° 돌린다 (돌린 그림 데이터로 바꿈, 실행 취소 한 단계) */
+  rotateImage(stroke: Stroke): Promise<boolean>;
+  /** 크기 손잡이 화면 좌표 (캔버스 기준 px) — 객체 하나만 선택했을 때 네 모서리, 아니면 [] */
+  selectionHandles(): { corner: 'nw' | 'ne' | 'sw' | 'se'; x: number; y: number }[];
+  /** 선택 영역의 화면 상자 (캔버스 기준 px) — 선택이 없으면 null */
+  selectionScreenBox(): { x: number; y: number; w: number; h: number } | null;
   renderLayoutPages(): HTMLCanvasElement[];
   renderPageThumbnail(i?: number, width?: number): HTMLCanvasElement | null;
   whenImagesReady(): Promise<unknown>;

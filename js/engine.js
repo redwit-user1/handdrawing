@@ -350,6 +350,7 @@ class DrawingEngine {
       translateStroke(c, offset, offset);
       return c;
     });
+    this._snapIntoPage(clones); // 페이지 가장자리 가까이에서 복제해도 페이지 안에
     this.strokes.push(...clones);
     this._pushUndo({ type: 'add-multi', strokes: clones });
     this._setSelection(clones);
@@ -359,17 +360,28 @@ class DrawingEngine {
 
   /* ============== 이미지 삽입 ============== */
 
-  /** 이미지를 뷰포트 중앙에 삽입하고 바로 선택 상태로 만든다 (올가미로 이동 가능) */
+  /**
+   * 이미지를 뷰포트 중앙에 삽입하고 바로 선택 상태로 만든다 (올가미로 이동 가능).
+   * 페이지 모드: 크기는 페이지 기준(사진은 본문 폭의 60%, 수식 등 kind 객체는 만든 크기 — 화면 배율과 무관),
+   * 자리는 화면 가운데 페이지의 본문 안. 넣은 뒤 화면 밖이면 보이게 넘긴다.
+   */
   addImage(src, naturalW, naturalH, extra = null) {
     if (this.readonly || !naturalW || !naturalH) return null;
     const rect = this.canvas.getBoundingClientRect();
     const center = this.screenToWorld(rect.width / 2, rect.height / 2);
-    // 화면의 60%를 넘지 않게 축소 배치
-    const maxW = (rect.width * 0.6) / this.scale;
-    const maxH = (rect.height * 0.6) / this.scale;
-    const k = Math.min(1, maxW / naturalW, maxH / naturalH);
-    const w = naturalW * k, h = naturalH * k;
-    const at = this._freeSpot(center.x - w / 2, center.y - h / 2, w, h);
+    let w, h, x, y;
+    if (this.layout) {
+      ({ w, h } = initialImageSize(this.layout, naturalW, naturalH, !(extra && extra.kind)));
+      const b = pageBodyRect(this.layout, this._pageAtY(center.y));
+      x = Math.max(b.x, Math.min(center.x - w / 2, b.x + b.w - w));
+      y = Math.max(b.y, Math.min(center.y - h / 2, b.y + b.h - h));
+    } else {
+      // 무한 캔버스: 화면의 60%를 넘지 않게 축소 배치 (예전과 같다)
+      const k = Math.min(1, (rect.width * 0.6) / this.scale / naturalW, (rect.height * 0.6) / this.scale / naturalH);
+      w = naturalW * k; h = naturalH * k;
+      x = center.x - w / 2; y = center.y - h / 2;
+    }
+    const at = this._freeSpot(x, y, w, h);
     const stroke = Object.assign({
       tool: 'image', src, size: 0, t: Date.now(),
       points: [[round2(at.x), round2(at.y)], [round2(at.x + w), round2(at.y + h)]],
@@ -379,7 +391,59 @@ class DrawingEngine {
     this._setSelection([stroke]);
     this.requestRender(true);
     this._emitChange(true);
+    this.revealObject(stroke);
     return stroke;
+  }
+
+  /** 월드 y 가 속한 페이지 번호 (0 이상) */
+  _pageAtY(wy) {
+    return Math.max(0, Math.floor(wy / this._pageStride()));
+  }
+
+  /** 객체를 화면에 보이게: 보이는 곳(떠 있는 UI 여백 제외)에 다 들어와 있지 않으면 가운데로 넘긴다 */
+  revealObject(stroke) {
+    if (!stroke || !stroke.points || !this.cssW) return;
+    const b = isBoxObject(stroke) ? objectBox(stroke) : (() => {
+      const bb = this._bboxOf([stroke]);
+      return { x: bb.minX, y: bb.minY, w: bb.maxX - bb.minX, h: bb.maxY - bb.minY };
+    })();
+    const I = this.insets, m = 8;
+    const vx = I.left, vy = I.top, vw = this.cssW - I.left - I.right, vh = this.cssH - I.top - I.bottom;
+    const sx = b.x * this.scale + this.tx, sy = b.y * this.scale + this.ty;
+    const sw = b.w * this.scale, sh = b.h * this.scale;
+    if (sx >= vx + m && sy >= vy + m && sx + sw <= vx + vw - m && sy + sh <= vy + vh - m) return;
+    this.tx = vx + vw / 2 - (b.x + b.w / 2) * this.scale;
+    this.ty = sh > vh - 32 ? vy + 16 - b.y * this.scale : vy + vh / 2 - (b.y + b.h / 2) * this.scale;
+    this.requestRender(true);
+    this._emitViewport();
+  }
+
+  /**
+   * 페이지 모드: strokes 를 한 덩어리로 보고 페이지 밖으로 걸쳤으면 페이지 본문 안으로 옮긴다 (기록 없이 제자리에서).
+   * 페이지보다 큰 덩어리는 그대로 둔다. 옮긴 거리 {dx, dy}
+   */
+  _snapIntoPage(strokes) {
+    if (!this.layout || !strokes.length) return { dx: 0, dy: 0 };
+    const b = this._inkBox(strokes);
+    if (b.w > this.layout.pageW || b.h > this.layout.pageH) return { dx: 0, dy: 0 };
+    const { dx, dy } = snapBoxIntoPage(this.layout, b);
+    if (dx || dy) for (const s of strokes) translateStroke(s, dx, dy);
+    return { dx, dy };
+  }
+
+  /** 잉크가 닿는 범위 (객체는 상자 그대로, 획은 굵기 절반까지) */
+  _inkBox(strokes) {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const s of strokes) {
+      const half = isBoxObject(s) ? 0 : (s.size || 0) / 2;
+      for (const [x, y] of strokeSamplePoints(s)) {
+        if (x - half < minX) minX = x - half;
+        if (y - half < minY) minY = y - half;
+        if (x + half > maxX) maxX = x + half;
+        if (y + half > maxY) maxY = y + half;
+      }
+    }
+    return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
   }
 
   /**
@@ -394,10 +458,11 @@ class DrawingEngine {
     let width = table.width || Math.min(600, (rect.width * 0.8) / this.scale);
     let x = center.x - width / 2, y = center.y - 60;
     if (this.layout) {
-      const i = Math.max(0, Math.floor(center.y / this._pageStride()));
+      const i = this._pageAtY(center.y);
       const r = this.pageRect(i);
-      width = Math.min(width, r.w - 48);
-      x = Math.max(r.x + 24, Math.min(x, r.x + r.w - 24 - width));
+      // 폭은 페이지 기준 (화면 배율과 무관)
+      width = Math.min(table.width || 600, r.w - 48);
+      x = Math.max(r.x + 24, Math.min(center.x - width / 2, r.x + r.w - 24 - width));
       y = Math.max(r.y + PAGE_HEADER_H + 16, Math.min(y, r.y + r.h - 120));
     }
     const stroke = {
@@ -418,6 +483,7 @@ class DrawingEngine {
     this._setSelection([stroke]);
     this.requestRender(true);
     this._emitChange(true);
+    this.revealObject(stroke);
     return stroke;
   }
 
@@ -460,6 +526,13 @@ class DrawingEngine {
       }
       this.layoutTable(stroke);
     }
+    if (this.layout && stroke.tool === 'image') {
+      // 다시 만든 그림이 본문보다 커졌으면 비율을 지켜 줄인다 (왼쪽 위 기준)
+      const b = objectBox(stroke), body = pageBodyRect(this.layout, 0);
+      const f = fitSize(b.w, b.h, body.w, body.h);
+      if (f.w < b.w) stroke.points = [[round2(b.x), round2(b.y)], [round2(b.x + f.w), round2(b.y + f.h)]];
+    }
+    this._snapIntoPage([stroke]); // 커지면서 페이지 밖으로 걸치면 페이지 안으로
     this._pushUndo({ type: 'replace', stroke, before, after: snapshotStroke(stroke) });
     if (this.selection && this.selection.strokes.has(stroke)) this.selection.bbox = this._bboxOf([stroke]);
     this.requestRender(true);
@@ -526,6 +599,7 @@ class DrawingEngine {
     this._setSelection([stroke]);
     this.requestRender(true);
     this._emitChange(true);
+    this.revealObject(stroke);
     return stroke;
   }
 
@@ -543,6 +617,159 @@ class DrawingEngine {
       this._imgCache.set(src, img);
     }
     return img;
+  }
+
+  /* ============== 크기 손잡이 ============== */
+
+  /** 손잡이를 보일 객체 — 상자 객체 하나만 선택했을 때 그 객체 */
+  _handleTarget() {
+    if (!this.selection || this.readonly || this.selection.strokes.size !== 1) return null;
+    const [s] = this.selection.strokes;
+    return isBoxObject(s) ? s : null;
+  }
+
+  _screenBox(b) {
+    return { x: b.x * this.scale + this.tx, y: b.y * this.scale + this.ty, w: b.w * this.scale, h: b.h * this.scale };
+  }
+
+  /** 화면 좌표(캔버스 기준 px)에 있는 손잡이 'nw'|'ne'|'sw'|'se' — 없으면 null */
+  _handleAt(x, y) {
+    const s = this._handleTarget();
+    return s ? handleAt(this._screenBox(objectBox(s)), x, y) : null;
+  }
+
+  /** 손잡이 화면 좌표 (캔버스 기준 CSS px) — 호스트·테스트용. 손잡이가 없으면 [] */
+  selectionHandles() {
+    const s = this._handleTarget();
+    if (!s) return [];
+    return boxCorners(this._screenBox(objectBox(s))).map(([corner, x, y]) => ({ corner, x, y }));
+  }
+
+  /** 선택 영역의 화면 상자 (캔버스 기준 CSS px) — 선택 막대 자리용. 선택이 없으면 null */
+  selectionScreenBox() {
+    if (!this.selection) return null;
+    const b = this.selection.bbox;
+    return this._screenBox({ x: b.minX, y: b.minY, w: b.maxX - b.minX, h: b.maxY - b.minY });
+  }
+
+  /** 손잡이 끌기 시작 — 객체 하나가 선택되어 있어야 한다. w: 누른 곳(월드) */
+  _startResize(e, corner, w) {
+    const s = this._handleTarget();
+    if (!s) return false;
+    const start = objectBox(s);
+    let bounds = null;
+    if (this.layout) {
+      // 커질 수 있는 곳: 객체를 가장 많이 담은 페이지의 본문 (이미 그 밖에 있는 부분까지는 허용)
+      const body = pageBodyRect(this.layout, pageIndexOfBox(this.layout, start));
+      const x0 = Math.min(body.x, start.x), y0 = Math.min(body.y, start.y);
+      bounds = { x: x0, y: y0, w: Math.max(body.x + body.w, start.x + start.w) - x0, h: Math.max(body.y + body.h, start.y + start.h) - y0 };
+    }
+    this.drawing = {
+      resize: true, pointerId: e.pointerId, pointerType: e.pointerType, corner,
+      target: s, start, startWX: w.x, startWY: w.y, bounds, before: snapshotStroke(s), changed: false,
+    };
+    return true;
+  }
+
+  /** 손잡이를 월드 좌표 w 까지 끌었다 */
+  _resizeTo(d, w) {
+    const s = d.target;
+    if (!this.selection || !this.selection.strokes.has(s)) return;
+    const min = s.tool === 'table' ? { minW: Math.max(40, (s.cols || 1) * 32), minH: 8 }
+      : s.tool === 'text' ? { minW: 80, minH: 8 } : { minW: 16, minH: 16 };
+    const nb = resizeBox(d.start, d.corner, w.x - d.startWX, w.y - d.startWY, { aspect: s.tool === 'image', bounds: d.bounds, ...min });
+    this._applyBox(s, nb, d.before);
+    d.changed = true;
+    this.selection.bbox = this._bboxOf([s]);
+    this.requestRender(true);
+    this._emitSelection();
+  }
+
+  /**
+   * 객체에 새 상자를 입힌다. 그림: 상자 그대로(비율은 호출부가 지킨다).
+   * 글상자·표: 폭만 — 글상자는 글에 맞춰 높이, 표는 칸 폭을 같은 비율로 늘리고 줄 높이를 다시 잰다(글자 크기는 그대로)
+   */
+  _applyBox(s, nb, before) {
+    const x = round2(nb.x), y = round2(nb.y);
+    if (s.tool === 'image') {
+      s.points = [[x, y], [round2(nb.x + nb.w), round2(nb.y + nb.h)]];
+    } else if (s.tool === 'text') {
+      s.points = [[x, y], [round2(nb.x + nb.w), round2(nb.y + nb.h)]];
+      this._fitTextHeight(s);
+    } else if (s.tool === 'table') {
+      const colW0 = before.colW || [];
+      const total = colW0.reduce((a, b) => a + b, 0) || 1;
+      s.colW = colW0.map((c) => round2((c * nb.w) / total));
+      s.points = [[x, y], [x, y]];
+      this.layoutTable(s);
+    }
+  }
+
+  /** 손잡이 끌기 끝 — revert: 없던 일로(기록 없음), 아니면 페이지 안으로 맞추고 실행 취소 한 단계(replace) */
+  _endResize(d, { revert = false } = {}) {
+    const s = d.target;
+    this.drawing = null;
+    if (!this.strokes.includes(s)) return;
+    if (revert || !d.changed) {
+      if (d.changed) restoreSnapshot(s, d.before);
+    } else {
+      this._snapIntoPage([s]);
+      const after = snapshotStroke(s);
+      if (JSON.stringify(after) !== JSON.stringify(d.before)) {
+        this._pushUndo({ type: 'replace', stroke: s, before: d.before, after });
+        this._emitChange(true);
+      }
+    }
+    if (this.selection && this.selection.strokes.has(s)) this.selection.bbox = this._bboxOf([s]);
+    this.requestRender(true);
+    this._emitSelection();
+  }
+
+  /**
+   * 사진을 시계 방향으로 90° 돌린다 — 돌린 그림을 새 데이터(data URL)로 만들어 넣는다(저장 형식은 그대로).
+   * 가운데를 지키고 폭·높이를 바꾼 뒤 본문에 맞추고 페이지 안으로. 실행 취소 한 단계. 성공하면 true
+   */
+  async rotateImage(stroke) {
+    if (this.readonly || !stroke || stroke.tool !== 'image' || !this.strokes.includes(stroke)) return false;
+    const img = this._getImage(stroke.src);
+    if (!img.complete) {
+      await new Promise((res) => { img.addEventListener('load', res, { once: true }); img.addEventListener('error', res, { once: true }); });
+    }
+    if (!img.naturalWidth) return false;
+    const c = document.createElement('canvas');
+    c.width = img.naturalHeight;
+    c.height = img.naturalWidth;
+    const cx = c.getContext('2d');
+    const jpeg = /^data:image\/jpe?g/i.test(stroke.src);
+    if (jpeg) { cx.fillStyle = '#ffffff'; cx.fillRect(0, 0, c.width, c.height); }
+    cx.translate(c.width, 0);
+    cx.rotate(Math.PI / 2);
+    cx.drawImage(img, 0, 0);
+    let src;
+    try { src = jpeg ? c.toDataURL('image/jpeg', 0.92) : c.toDataURL('image/png'); } catch (_) { return false; } // 다른 출처 그림
+    // 새 그림을 먼저 읽어 두어 바꾸는 순간 깜박이지 않게
+    const next = new Image();
+    next.src = src;
+    try { await next.decode(); } catch (_) {}
+    this._imgCache.set(src, next);
+    if (this.readonly || !this.strokes.includes(stroke)) return false;
+    const before = snapshotStroke(stroke);
+    let b = rotateBox90(objectBox(stroke));
+    if (this.layout) {
+      const body = pageBodyRect(this.layout, 0);
+      const f = fitSize(b.w, b.h, body.w, body.h);
+      const cxw = b.x + b.w / 2, cyw = b.y + b.h / 2;
+      b = { x: cxw - f.w / 2, y: cyw - f.h / 2, w: f.w, h: f.h };
+    }
+    stroke.src = src;
+    stroke.points = [[round2(b.x), round2(b.y)], [round2(b.x + b.w), round2(b.y + b.h)]];
+    this._snapIntoPage([stroke]);
+    this._pushUndo({ type: 'replace', stroke, before, after: snapshotStroke(stroke) });
+    if (this.selection && this.selection.strokes.has(stroke)) this.selection.bbox = this._bboxOf([stroke]);
+    this.requestRender(true);
+    this._emitChange(true);
+    this._emitSelection();
+    return true;
   }
 
   _selectionContains(wx, wy) {
@@ -650,11 +877,15 @@ class DrawingEngine {
         inSel: this._selectionContains(w.x, w.y),
         palm: isPalmSuspect({ penDown: this._penPointerActive(), sincePen: now - this.penLastSeen, width: e.width, height: e.height }),
       };
+      // 크기 손잡이 — 손바닥으로 의심되면 잡지 않는다
+      this.drawing.handle = this.drawing.palm ? null : this._handleAt(x, y);
       return;
     }
 
-    // 올가미 도구: 선택 영역 안이면 이동, 밖이면 새 올가미
+    // 올가미 도구: 손잡이면 크기 바꾸기, 선택 영역 안이면 이동, 밖이면 새 올가미
     if (this.tool === 'lasso') {
+      const corner = this._handleAt(x, y);
+      if (corner && this._startResize(e, corner, w)) return;
       if (this.selection && this._selectionContains(w.x, w.y)) {
         this._startSelMove(e, w);
         return;
@@ -732,6 +963,12 @@ class DrawingEngine {
     }
     // 펜이 화면 위에 떠 있을 때(호버)도 손바닥 무시 시간을 늘린다 — 펜을 대기 직전에 닿는 손바닥 거르기
     if (this._isPen(e)) this.penLastSeen = performance.now();
+    // 마우스가 크기 손잡이 위에 있으면 커서로 알려 준다
+    if (e.pointerType === 'mouse' && !this.pointers.size && this.tool === 'lasso') {
+      const p = this._pos(e), c = this._handleAt(p.x, p.y);
+      const cur = c ? (c === 'nw' || c === 'se' ? 'nwse-resize' : 'nesw-resize') : '';
+      if (this.canvas.style.cursor !== cur) this.canvas.style.cursor = cur;
+    }
     if (!this.pointers.has(e.pointerId)) return;
 
     const { x, y } = this._pos(e);
@@ -752,12 +989,14 @@ class DrawingEngine {
       // 누른 곳부터 따라오도록 그때까지 움직인 만큼 바로 반영한다
       const out = fingerOutcome({
         dist: Math.hypot(x - d.sx, y - d.sy), ms: 0, ended: false,
-        inSelection: d.inSel, palm: d.palm || this.penLastSeen > d.t0,
+        inSelection: d.inSel, onHandle: !!d.handle, palm: d.palm || this.penLastSeen > d.t0,
       });
-      if (out === 'move') {
-        this._startSelMove(e, { x: d.wx, y: d.wy });
+      // 옮기기·크기 바꾸기는 누른 곳부터 (그 사이 선택이 풀렸으면 넘기기)
+      if (out === 'resize' && this._startResize(e, d.handle, { x: d.wx, y: d.wy })) {
+        this._resizeTo(this.drawing, w);
+      } else if (out === 'move' && this._startSelMove(e, { x: d.wx, y: d.wy })) {
         this._selMoveTo(this.drawing, w);
-      } else if (out === 'pan') {
+      } else if (out !== 'pending') {
         this._panFromTouchDown(e, d, x, y);
       }
       return;
@@ -793,6 +1032,11 @@ class DrawingEngine {
 
     if (d.selMove) {
       this._selMoveTo(d, w);
+      return;
+    }
+
+    if (d.resize) {
+      this._resizeTo(d, w);
       return;
     }
 
@@ -835,7 +1079,7 @@ class DrawingEngine {
       const { x, y } = this._pos(e);
       const out = fingerOutcome({
         dist: Math.hypot(x - d.sx, y - d.sy), ms: performance.now() - d.t0, ended: true,
-        inSelection: d.inSel, palm: d.palm || this.penLastSeen > d.t0,
+        inSelection: d.inSel, onHandle: !!d.handle, palm: d.palm || this.penLastSeen > d.t0,
       });
       if (out === 'tap') this._fingerTap(d.wx, d.wy);
       return; // 'keep'(선택 안 탭 → 선택 유지)·'none'(손바닥 의심·길게 누름)은 아무것도 하지 않는다
@@ -845,6 +1089,12 @@ class DrawingEngine {
     if (d.selMove && d.pointerType === 'touch' && e.type === 'pointercancel') {
       this._revertSelMove(d);
       this.drawing = null;
+      return;
+    }
+
+    // 크기 바꾸기 끝 (손가락이 시스템 취소되면 되돌린다)
+    if (d.resize) {
+      this._endResize(d, { revert: d.pointerType === 'touch' && e.type === 'pointercancel' });
       return;
     }
 
@@ -899,13 +1149,7 @@ class DrawingEngine {
 
     if (d.selMove) {
       this.drawing = null;
-      if (d.totalDx !== 0 || d.totalDy !== 0) {
-        this._pushUndo({
-          type: 'move', strokes: this.selectedStrokes(),
-          dx: d.totalDx, dy: d.totalDy,
-        });
-        this._emitChange(true);
-      }
+      this._commitSelMove(d);
       this.requestRender(true);
       return;
     }
@@ -924,11 +1168,27 @@ class DrawingEngine {
     this.requestRender();
   }
 
+  /** 선택한 것 옮기기 시작 — 선택이 없으면(그 사이 풀림) false */
   _startSelMove(e, w) {
+    if (!this.selection) return false;
     this.drawing = {
       selMove: true, pointerId: e.pointerId, pointerType: e.pointerType,
       lastWX: w.x, lastWY: w.y, totalDx: 0, totalDy: 0,
     };
+    return true;
+  }
+
+  /** 옮기기 확정: 페이지 밖으로 걸쳤으면 페이지 안으로 맞추고 실행 취소 한 단계(move) */
+  _commitSelMove(d) {
+    if (!this.selection || (d.totalDx === 0 && d.totalDy === 0)) return;
+    const strokes = this.selectedStrokes();
+    const sn = this._snapIntoPage(strokes);
+    if (sn.dx || sn.dy) {
+      this.selection.bbox = this._bboxOf(strokes);
+      this._emitSelection();
+    }
+    this._pushUndo({ type: 'move', strokes, dx: round2(d.totalDx + sn.dx), dy: round2(d.totalDy + sn.dy) });
+    this._emitChange(true);
   }
 
   /** 진행 중인 옮기기: 선택한 것을 월드 좌표 w 까지 */
@@ -941,6 +1201,7 @@ class DrawingEngine {
   }
 
   _translateSelection(dx, dy) {
+    if (!this.selection) return;
     for (const s of this.selection.strokes) translateStroke(s, dx, dy);
     const b = this.selection.bbox;
     b.minX += dx; b.maxX += dx; b.minY += dy; b.maxY += dy;
@@ -980,16 +1241,17 @@ class DrawingEngine {
   /**
    * 진행 중인 손가락 입력을 정리한다 (두 번째 손가락·펜이 끼어들 때).
    * 지우기는 그때까지를 확정(실행 취소 가능)하고, 획·올가미·탭은 버린다.
-   * 옮기기: 두 번째 손가락(핀치)이면 확정, 펜이 닿은 것(revertMove — 손바닥이었다)이면 되돌린다.
+   * 옮기기·크기 바꾸기: 두 번째 손가락(핀치)이면 확정, 펜이 닿은 것(revertMove — 손바닥이었다)이면 되돌린다.
    */
   _settleTouchDrawing({ revertMove = false } = {}) {
     const d = this.drawing;
     if (!d || d.pointerType !== 'touch') return;
-    if (d.selMove && revertMove) {
+    if (d.resize) {
+      this._endResize(d, { revert: revertMove });
+    } else if (d.selMove && revertMove) {
       this._revertSelMove(d);
-    } else if (d.selMove && (d.totalDx !== 0 || d.totalDy !== 0)) {
-      this._pushUndo({ type: 'move', strokes: this.selectedStrokes(), dx: d.totalDx, dy: d.totalDy });
-      this._emitChange(true);
+    } else if (d.selMove) {
+      this._commitSelMove(d);
     } else if (d.erasing && this.erasedInDrag.length > 0) {
       this._pushUndo({ type: 'remove', entries: this.erasedInDrag });
       this._emitChange(true);
@@ -1222,6 +1484,20 @@ class DrawingEngine {
       ctx.strokeStyle = '#2563eb';
       ctx.strokeRect(b.minX, b.minY, b.maxX - b.minX, b.maxY - b.minY);
       ctx.setLineDash([]);
+      // 크기 손잡이 (객체 하나만 선택했을 때 네 모서리 — 화면 크기 고정)
+      const hs = this.selectionHandles();
+      if (hs.length) {
+        ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = '#2563eb';
+        ctx.fillStyle = '#ffffff';
+        for (const h of hs) {
+          ctx.beginPath();
+          ctx.arc(h.x, h.y, HANDLE_DOT_PX, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+        }
+      }
     }
 
     // 지우개 커서
@@ -1671,6 +1947,7 @@ class DrawingEngine {
         if (value) {
           s.text = value;
           this._fitTextHeight(s);
+          this._snapIntoPage([s]); // 글이 길어져 페이지 밖으로 걸치면 페이지 안으로
           this.strokes.push(s);
           this._pushUndo({ type: 'add', stroke: s });
           this._emitChange(true);
@@ -1685,6 +1962,7 @@ class DrawingEngine {
       } else if (value !== te.before.text) {
         s.text = value;
         this._fitTextHeight(s);
+        this._snapIntoPage([s]);
         this._pushUndo({ type: 'edit', stroke: s, before: te.before, after: textState(s) });
         this._emitChange(true);
       }
@@ -2003,18 +2281,19 @@ function isPalmSuspect({ penDown = false, sincePen = Infinity, penAfterTouch = f
 /**
  * 손가락 한 개의 결과
  *   'pending' 아직 모름 (10px 안에서 누르고 있음)
+ *   'resize'  크기 손잡이에서 10px 넘게 끔 → 크기 바꾸기 (손바닥 의심이면 넘기기)
  *   'move'    선택 영역 안에서 10px 넘게 끔 → 옮기기 (손바닥 의심이면 넘기기)
  *   'pan'     10px 넘게 끔 → 화면 넘기기
  *   'tap'     짧게 누르고 뗌 → 지금 도구의 탭
- *   'keep'    선택 영역 안을 짧게 누름 → 선택 유지 (아무것도 안 함)
+ *   'keep'    선택 영역 안·손잡이를 짧게 누름 → 선택 유지 (아무것도 안 함)
  *   'none'    손바닥 의심·오래 누름 → 아무것도 안 함
  */
-function fingerOutcome({ dist, ms, ended, inSelection = false, palm = false }) {
+function fingerOutcome({ dist, ms, ended, inSelection = false, onHandle = false, palm = false }) {
   const intent = touchIntent(dist, ms, ended);
-  if (intent === 'pan') return inSelection && !palm ? 'move' : 'pan';
+  if (intent === 'pan') return palm ? 'pan' : onHandle ? 'resize' : inSelection ? 'move' : 'pan';
   if (intent === 'pending') return 'pending';
   if (palm || intent === 'hold') return 'none';
-  return inSelection ? 'keep' : 'tap';
+  return inSelection || onHandle ? 'keep' : 'tap';
 }
 
 /** 손가락 한 개의 움직임 판정: 'pan'(많이 움직임) | 'pending'(아직 모름) | 'tap'(짧게 누르고 뗌) | 'hold'(오래 누르고 뗌) */
@@ -2026,6 +2305,135 @@ function touchIntent(dist, ms, ended) {
 
 function isBoxObject(s) {
   return s.tool === 'image' || s.tool === 'text' || s.tool === 'table';
+}
+
+/* ── 객체 크기·자리 (페이지 모드) — 순수 함수, 월드 좌표의 상자 {x, y, w, h} ── */
+const PAGE_BODY_MX = 24;      // 본문 좌우 여백 (머리글 구분선과 같은 자리)
+const PAGE_BODY_MY = 12;      // 머리글 아래·페이지 아래 여백
+const PHOTO_PAGE_FRAC = 0.6;  // 사진 기본 폭 = 본문 폭의 60%
+const HANDLE_DOT_PX = 6;      // 크기 손잡이 점 반지름 (화면 px — 지름 12)
+const HANDLE_HIT_PX = 22;     // 손잡이를 잡는 반지름 (화면 px, 손가락 크기)
+
+/** 페이지 i 의 본문(머리글·여백을 뺀 곳) */
+function pageBodyRect(layout, i) {
+  const top = i * (layout.pageH + layout.gap);
+  return {
+    x: PAGE_BODY_MX, y: top + PAGE_HEADER_H + PAGE_BODY_MY,
+    w: layout.pageW - PAGE_BODY_MX * 2, h: layout.pageH - PAGE_HEADER_H - PAGE_BODY_MY * 2,
+  };
+}
+
+/** 상자를 가장 많이 담은 페이지 번호 (반반이면 아래 페이지, 페이지 사이 틈에만 있으면 위 페이지) */
+function pageIndexOfBox(layout, b) {
+  const stride = layout.pageH + layout.gap;
+  const first = Math.max(0, Math.floor(b.y / stride));
+  const last = Math.max(first, Math.floor((b.y + b.h) / stride));
+  let best = first, bestOv = -Infinity;
+  for (let i = first; i <= last; i++) {
+    const top = i * stride;
+    const ov = Math.min(b.y + b.h, top + layout.pageH) - Math.max(b.y, top);
+    if (ov >= bestOv && (ov > 0 || i === first)) { best = i; bestOv = ov; }
+  }
+  return best;
+}
+
+/**
+ * 페이지 밖으로 걸친 상자를 그 상자를 가장 많이 담은 페이지의 본문 안으로 옮길 거리 {dx, dy, page}.
+ * 페이지 안에 있으면 0 (여백·머리글 위에 둔 것은 그대로). 걸친 방향만 옮기고, 페이지보다 큰 방향은 그대로 둔다.
+ */
+function snapBoxIntoPage(layout, b) {
+  const page = pageIndexOfBox(layout, b);
+  const top = page * (layout.pageH + layout.gap);
+  const body = pageBodyRect(layout, page);
+  const fit = (pos, size, lo, len, outerLo, outerLen) => {
+    if (pos >= outerLo && pos + size <= outerLo + outerLen) return pos;  // 이 방향은 페이지 안
+    if (size > outerLen) return pos;                                    // 페이지보다 크다 — 옮겨도 잘린다
+    if (size <= len) return Math.min(Math.max(pos, lo), lo + len - size);
+    return Math.min(Math.max(pos, outerLo), outerLo + outerLen - size); // 본문보다 크면 페이지 안에서
+  };
+  const nx = fit(b.x, b.w, body.x, body.w, 0, layout.pageW);
+  const ny = fit(b.y, b.h, body.y, body.h, top, layout.pageH);
+  return { dx: round2(nx - b.x), dy: round2(ny - b.y), page };
+}
+
+/**
+ * 새 그림의 크기 (페이지 모드). 사진은 본문 폭의 60%(원본보다 키우지 않음), 수식·구조식 같은 삽입 객체(kind)는
+ * 만든 크기 그대로 — 둘 다 본문(폭·높이) 안에 들어가게 줄인다. 화면 확대 배율과 상관없다.
+ */
+function initialImageSize(layout, naturalW, naturalH, photo = true) {
+  const bw = layout.pageW - PAGE_BODY_MX * 2;
+  const bh = layout.pageH - PAGE_HEADER_H - PAGE_BODY_MY * 2;
+  const target = photo ? (bw * PHOTO_PAGE_FRAC) / naturalW : 1;
+  const k = Math.min(1, target, bw / naturalW, bh / naturalH);
+  return { w: round2(naturalW * k), h: round2(naturalH * k) };
+}
+
+/** 상자를 (최대 maxW × maxH 안으로) 비율을 지켜 줄인 크기 — 이미 들어가면 그대로 */
+function fitSize(w, h, maxW, maxH) {
+  const k = Math.min(1, maxW / w, maxH / h);
+  return { w: w * k, h: h * k };
+}
+
+/** 상자의 네 모서리 [[이름, x, y], …] */
+function boxCorners(b) {
+  return [['nw', b.x, b.y], ['ne', b.x + b.w, b.y], ['sw', b.x, b.y + b.h], ['se', b.x + b.w, b.y + b.h]];
+}
+
+/**
+ * (x, y)(화면 px)가 잡은 모서리 손잡이 — 없으면 null. 상자 밖에서는 반지름 r 까지 잡고,
+ * 상자 안에서는 작은 객체를 옮길 수 있게 짧은 변의 1/3 까지만 손잡이로 본다.
+ */
+function handleAt(box, x, y, r = HANDLE_HIT_PX) {
+  const inside = x > box.x && x < box.x + box.w && y > box.y && y < box.y + box.h;
+  const lim = inside ? Math.min(r, Math.min(box.w, box.h) / 3) : r;
+  let best = null, bd = Infinity;
+  for (const [corner, hx, hy] of boxCorners(box)) {
+    const d = Math.hypot(x - hx, y - hy);
+    if (d <= lim && d < bd) { best = corner; bd = d; }
+  }
+  return best;
+}
+
+/**
+ * 모서리 손잡이로 끈 뒤의 상자. start: 처음 상자, corner: 'nw'|'ne'|'sw'|'se', (dx, dy): 끈 거리(월드).
+ * 반대쪽 모서리는 그대로. aspect: 비율 고정(끈 방향을 대각선에 투영), 아니면 폭만 바뀐다(높이는 호출부가 내용에 맞춘다).
+ * bounds: 커질 수 있는 한계 사각형(없으면 무한) — 최소 크기(minW·minH)가 먼저다. 뒤집히지 않는다.
+ */
+function resizeBox(start, corner, dx, dy, { aspect = true, minW = 16, minH = 16, bounds = null } = {}) {
+  const east = corner === 'ne' || corner === 'se';
+  const south = corner === 'sw' || corner === 'se';
+  const ax = east ? start.x : start.x + start.w;   // 고정 모서리
+  const ay = south ? start.y : start.y + start.h;
+  const rawW = east ? start.w + dx : start.w - dx;
+  const rawH = south ? start.h + dy : start.h - dy;
+  let maxW = Infinity, maxH = Infinity;
+  if (bounds) {
+    maxW = Math.max(0, east ? bounds.x + bounds.w - ax : ax - bounds.x);
+    maxH = Math.max(0, south ? bounds.y + bounds.h - ay : ay - bounds.y);
+  }
+  let w, h;
+  if (aspect) {
+    let k = (rawW * start.w + rawH * start.h) / (start.w * start.w + start.h * start.h);
+    k = Math.min(k, maxW / start.w, maxH / start.h);
+    k = Math.max(k, minW / start.w, minH / start.h);
+    w = start.w * k; h = start.h * k;
+  } else {
+    w = Math.max(minW, Math.min(rawW, maxW));
+    h = start.h;
+  }
+  return { x: east ? ax : ax - w, y: south ? ay : ay - h, w, h };
+}
+
+/** 90° 돌린 상자 — 가운데를 지키고 폭·높이를 바꾼다 */
+function rotateBox90(b) {
+  const cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+  return { x: cx - b.h / 2, y: cy - b.w / 2, w: b.h, h: b.w };
+}
+
+/** 상자 객체의 월드 상자 */
+function objectBox(s) {
+  const [[ax, ay], [bx, by]] = s.points;
+  return { x: Math.min(ax, bx), y: Math.min(ay, by), w: Math.abs(bx - ax), h: Math.abs(by - ay) };
 }
 
 function normalizeCells(cells, rows, cols) {
@@ -2195,5 +2603,9 @@ if (typeof window !== 'undefined') {
   window.HandDrawing = {
     DrawingEngine, defaultPageLayout, normalizePageLayout, A4_BODY_ASPECT, PAPERS, PAPER_DEFAULT, paperSpec,
     input: { fingerDownAction, fingerOutcome, isPalmSuspect, touchIntent, TOUCH_TAP_SLOP, TOUCH_TAP_MS, PEN_GUARD_MS, PALM_CONTACT_PX },
+    geom: {
+      pageBodyRect, pageIndexOfBox, snapBoxIntoPage, initialImageSize, fitSize, boxCorners, handleAt, resizeBox, rotateBox90,
+      PAGE_HEADER_H, PAGE_BODY_MX, PAGE_BODY_MY, PHOTO_PAGE_FRAC, HANDLE_DOT_PX, HANDLE_HIT_PX,
+    },
   };
 }

@@ -463,6 +463,7 @@ try {
     const tableAt = await page.evaluate(() => {
       const e = window.__engine;
       const t = e.strokes.find((s) => s.tool === 'table');
+      e.revealObject(t); // 마지막에 넣은 구조식(다음 페이지)으로 화면이 따라갔다 — 표가 보이게
       const [[x0, y0], [x1, y1]] = t.points;
       return { x: ((x0 + x1) / 2) * e.scale + e.tx, y: ((y0 + y1) / 2) * e.scale + e.ty };
     });
@@ -766,6 +767,192 @@ try {
     await cdp.detach();
     await waitSaved();
     await shot('10-finger-input');
+  });
+
+  await check('사진·객체 배치: 확대와 상관없는 페이지 기준 크기, 페이지 밖으로 끌면 페이지 안으로(올린 페이지 그림에 잘리지 않음), 모서리 손잡이(펜·손가락, 비율 유지, 실행 취소 한 단계), 90° 회전, 페이지 아래에 넣으면 보이게, 가장자리 복제', async () => {
+    const P = '사진 배치 노트';
+    await tid('back').click();
+    await newNote(P);
+    const cdp = await context.newCDPSession(page);
+    const E = (fn, arg) => page.evaluate(new Function('arg', `const e = window.__engine; return (${fn})(e, arg);`), arg);
+    const st = () => E((e) => ({ tx: e.tx, ty: e.ty, scale: e.scale, n: e.strokes.length, undo: e.undoStack.length, sel: e.selectedStrokes().length }));
+    const settle = () => page.waitForTimeout(1600); // 펜 뒤 1.5초 안의 손가락은 손바닥 의심
+    /** 사진(단색 + 위쪽 흰 표시) JPEG — 앱 안 캔버스로 만든다 */
+    const photo = async (color, w = 1200, h = 800) => Buffer.from((await page.evaluate(([color, w, h]) => {
+      const c = document.createElement('canvas'); c.width = w; c.height = h;
+      const x = c.getContext('2d'); x.fillStyle = color; x.fillRect(0, 0, w, h);
+      x.fillStyle = '#ffffff'; x.fillRect(w * 0.45, 0, w * 0.1, h * 0.2); // 위쪽 표시 (돌리기 확인)
+      return c.toDataURL('image/jpeg', 0.9);
+    }, [color, w, h])).split(',')[1], 'base64');
+    const RED = await photo('#c02020'), BLUE = await photo('#2040c0');
+    /** i번째(음수면 뒤에서) 그림의 상자·페이지·화면에 보이는지 */
+    const box = (i = -1) => E((e, i) => {
+      const imgs = e.strokes.filter((s) => s.tool === 'image'), s = imgs[i < 0 ? imgs.length + i : i];
+      const [[ax, ay], [bx, by]] = s.points, L = e.layout, stride = L.pageH + L.gap, pg = Math.floor(ay / stride);
+      const I = e.insets, r = e.canvas.getBoundingClientRect();
+      const sx0 = ax * e.scale + e.tx, sy0 = ay * e.scale + e.ty, sx1 = bx * e.scale + e.tx, sy1 = by * e.scale + e.ty;
+      return { x: ax, y: ay, w: bx - ax, h: by - ay, page: pg, src: s.src.slice(-64),
+        inPage: ax >= 0 && bx <= L.pageW && ay >= pg * stride && by <= pg * stride + L.pageH,
+        visible: sx0 >= I.left && sy0 >= I.top && sx1 <= e.cssW - I.right && sy1 <= e.cssH - I.bottom,
+        center: [r.left + (sx0 + sx1) / 2, r.top + (sy0 + sy1) / 2] };
+    }, i);
+    const insertPhoto = async (buffer) => {
+      const n0 = (await st()).n;
+      await tid('tool-insert').click();
+      const fc = page.waitForEvent('filechooser');
+      await tid('insert-photo').click();
+      await (await fc).setFiles({ name: 'photo.jpg', mimeType: 'image/jpeg', buffer });
+      await until(async () => (await st()).n > n0, '사진 넣기');
+      await page.waitForTimeout(150);
+      return box();
+    };
+    /** 펜 끌기 (CDP 마우스 pointerType pen) */
+    const penDrag = async ([x0, y0], [x1, y1], steps = 20) => {
+      const M = (type, x, y, extra = {}) => cdp.send('Input.dispatchMouseEvent', { type, x, y, pointerType: 'pen', force: 0.5, ...extra });
+      await M('mouseMoved', x0, y0, { button: 'none' });
+      await M('mousePressed', x0, y0, { button: 'left', buttons: 1, clickCount: 1 });
+      for (let i = 1; i <= steps; i++) await M('mouseMoved', x0 + (x1 - x0) * i / steps, y0 + (y1 - y0) * i / steps, { button: 'left', buttons: 1 });
+      await M('mouseReleased', x1, y1, { button: 'left', buttons: 0, clickCount: 1 });
+    };
+    const T = (type, pts) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: pts });
+    const fingerDrag = async ([x0, y0], [x1, y1], steps = 12) => {
+      await T('touchStart', [{ x: x0, y: y0, id: 0 }]);
+      for (let i = 1; i <= steps; i++) await T('touchMove', [{ x: x0 + (x1 - x0) * i / steps, y: y0 + (y1 - y0) * i / steps, id: 0 }]);
+      await T('touchEnd', []);
+    };
+    const handle = async (corner) => {
+      const [h, r] = await E((e) => [e.selectionHandles(), e.canvas.getBoundingClientRect().toJSON()]);
+      const c = h.find((x) => x.corner === corner);
+      assert(c, `손잡이 ${corner} (${JSON.stringify(h)})`);
+      return [r.left + c.x, r.top + c.y];
+    };
+
+    // 1) 크기: 축소해서 넣든 확대해서 넣든 같은 크기(본문 폭 672 의 60%, 비율 그대로), 페이지 안
+    await E((e) => { e.fitWidth(); e.zoomBy(0.4); });
+    const zOut = await insertPhoto(RED);
+    await E((e) => { e.fitWidth(); e.zoomBy(3); });
+    const zIn = await insertPhoto(RED);
+    assert(Math.abs(zOut.w - 403.2) < 0.1 && Math.abs(zOut.h - 268.8) < 0.1, `축소해서 넣은 사진 크기 (${zOut.w}×${zOut.h})`);
+    assert(Math.abs(zIn.w - zOut.w) < 0.01 && Math.abs(zIn.h - zOut.h) < 0.01, `확대해서 넣어도 같은 크기 (${zIn.w}×${zIn.h})`);
+    assert(zOut.inPage && zIn.inPage, '둘 다 페이지 안');
+    await E((e) => { e.undo(); e.undo(); });
+    assert((await st()).n === 0, '실행 취소로 비움');
+
+    // 2) 1쪽 아래를 보며 넣기: 넣은 사진이 화면에 다 보인다 (두 번째는 자리가 없어 2쪽으로 → 화면이 따라간다)
+    await E((e) => { e.fitWidth(); e.ty = e.cssH / 2 - (e.layout.pageH - 60) * e.scale; e.requestRender(true); });
+    const b1 = await insertPhoto(RED);
+    assert(b1.page === 0 && b1.inPage && b1.visible, `1쪽 아래에 넣은 사진이 보임 (${JSON.stringify(b1)})`);
+    const b2 = await insertPhoto(BLUE);
+    assert(b2.page === 1 && b2.inPage && b2.visible, `2쪽으로 간 사진도 화면이 따라가 보임 (${JSON.stringify(b2)})`);
+    await E((e) => e.undo());
+
+    // 3) 펜으로 사진을 1쪽 아래 경계 너머로 끌기(대부분 2쪽) → 2쪽 본문 맨 위로, 실행 취소 한 단계
+    await E((e) => { e.fitWidth(); e.zoomBy(0.5, e.cssW / 2, 0); e.selectObject(e.strokes.find((s) => s.tool === 'image')); });
+    let s0 = await st();
+    const stride = await E((e) => e.layout.pageH + e.layout.gap);
+    const a0 = await box(0);
+    await penDrag(a0.center, [a0.center[0] + 120 * s0.scale, a0.center[1] + ((stride - a0.h * 0.3) - a0.y) * s0.scale]);
+    const a1 = await box(0);
+    let s1 = await st();
+    assert(a1.page === 1 && a1.inPage && Math.abs(a1.y - (stride + 56)) < 0.01, `2쪽 본문 맨 위로 맞춤 (${JSON.stringify(a1)})`);
+    assert(Math.abs(a1.w - a0.w) < 0.01 && s1.undo === s0.undo + 1, `크기 그대로, 실행 취소 한 단계 (${s0.undo}→${s1.undo})`);
+
+    // 4) 다른 사진(1쪽): 펜으로 오른쪽 아래 모서리 손잡이 끌기 → 비율 유지, 실행 취소 한 단계로 되돌림
+    await E((e) => e.fitWidth());
+    const c0 = await insertPhoto(BLUE);
+    assert(c0.page === 0, '두 번째 사진 1쪽');
+    s0 = await st();
+    const se = await handle('se');
+    await penDrag(se, [se[0] + 80, se[1] + 10]);
+    let c1 = await box();
+    s1 = await st();
+    assert(c1.w > c0.w + 40 && Math.abs(c1.w / c1.h - c0.w / c0.h) < 0.01, `펜 손잡이로 키움, 비율 유지 (${c0.w.toFixed(1)}→${c1.w.toFixed(1)}, ${(c1.w / c1.h).toFixed(3)})`);
+    assert(Math.abs(c1.x - c0.x) < 0.01 && Math.abs(c1.y - c0.y) < 0.01, '반대쪽 모서리(왼쪽 위) 그대로');
+    assert(s1.undo === s0.undo + 1, `펜 크기 바꾸기 실행 취소 한 단계 (${s0.undo}→${s1.undo})`);
+    await tid('undo').click();
+    const cu = await box();
+    assert(Math.abs(cu.w - c0.w) < 0.01 && Math.abs(cu.h - c0.h) < 0.01, '실행 취소 → 처음 크기');
+    await tid('redo').click();
+
+    // 5) 손가락(손가락 쓰기 꺼짐)으로 왼쪽 위 손잡이를 바깥으로 → 비율 유지, 화면은 그대로, 실행 취소 한 단계
+    if ((await tid('tool-touch').getAttribute('aria-pressed')) === 'true') await tid('tool-touch').click();
+    await E((e) => e.selectObject(e.strokes.filter((s) => s.tool === 'image').pop()));
+    await settle();
+    c1 = await box();
+    s0 = await st();
+    const nw = await handle('nw');
+    await fingerDrag([nw[0] - 4, nw[1] - 4], [nw[0] - 64, nw[1] - 44]);
+    const c2 = await box();
+    s1 = await st();
+    assert(c2.w > c1.w + 20 && Math.abs(c2.w / c2.h - c1.w / c1.h) < 0.01, `손가락 손잡이로 키움, 비율 유지 (${c1.w.toFixed(1)}→${c2.w.toFixed(1)})`);
+    assert(Math.abs((c2.x + c2.w) - (c1.x + c1.w)) < 0.01 && Math.abs((c2.y + c2.h) - (c1.y + c1.h)) < 0.01, '반대쪽 모서리(오른쪽 아래) 그대로');
+    assert(s1.tx === s0.tx && s1.ty === s0.ty && s1.undo === s0.undo + 1, `화면 그대로, 실행 취소 한 단계 (${s0.undo}→${s1.undo})`);
+
+    // 6) 90° 회전: 폭·높이가 바뀌고, 돌린 그림 데이터로 그려진다 (실행 취소 한 단계)
+    s0 = await st();
+    await tid('sel-rotate').click();
+    await until(async () => (await box()).src !== c2.src, '돌린 그림');
+    const c3 = await box();
+    s1 = await st();
+    assert(Math.abs(c3.w - c2.h) < 0.02 && Math.abs(c3.h - c2.w) < 0.02 && c3.inPage, `폭·높이 바뀜 (${c2.w.toFixed(1)}×${c2.h.toFixed(1)} → ${c3.w.toFixed(1)}×${c3.h.toFixed(1)})`);
+    assert(s1.undo === s0.undo + 1, '실행 취소 한 단계');
+    const rotated = await E(async (e) => {
+      const s = e.strokes.filter((x) => x.tool === 'image').pop(), img = e._getImage(s.src);
+      if (!img.complete) await new Promise((r) => img.addEventListener('load', r, { once: true }));
+      const c = document.createElement('canvas'); c.width = img.naturalWidth; c.height = img.naturalHeight;
+      const x = c.getContext('2d'); x.drawImage(img, 0, 0);
+      const at = (px, py) => Array.from(x.getImageData(px, py, 1, 1).data.slice(0, 3));
+      return { jpeg: s.src.startsWith('data:image/jpeg'), w: img.naturalWidth, h: img.naturalHeight, right: at(img.naturalWidth - 20, img.naturalHeight / 2), left: at(20, img.naturalHeight / 2) };
+    });
+    // 1200×800 → 800×1200, 위쪽 흰 표시가 오른쪽으로 (시계 방향)
+    assert(rotated.jpeg && rotated.w === 800 && rotated.h === 1200 && rotated.right.every((v) => v > 200) && rotated.left[2] > 150, `돌린 그림 픽셀 (${JSON.stringify(rotated)})`);
+    await shot('11-rotated-photo');
+
+    // 7) 펜으로 1쪽 오른쪽 아래 밖으로 끌기(대부분 1쪽) → 본문 오른쪽 아래 안으로, 그 자리에서 복제해도 페이지 안
+    await E((e) => { e.fitWidth(); e.zoomBy(0.5, e.cssW / 2, 0); });
+    const d0 = await box();
+    s0 = await st();
+    await penDrag(d0.center, [d0.center[0] + 400 * s0.scale, d0.center[1] + (1068 - d0.h * 0.8 - d0.y) * s0.scale]);
+    const d1 = await box();
+    assert(d1.page === 0 && d1.inPage && Math.abs(d1.x + d1.w - 696) < 0.02 && Math.abs(d1.y + d1.h - 1056) < 0.02, `1쪽 본문 오른쪽 아래로 맞춤 (${JSON.stringify(d1)})`);
+    await tid('sel-duplicate').click();
+    const dup = await box();
+    s1 = await st();
+    assert(s1.n === s0.n + 1 && dup.page === 0 && dup.inPage, `가장자리 복제도 페이지 안 (${JSON.stringify(dup)})`);
+
+    // 8) 선택 막대는 선택한 것 바로 위(또는 아래)
+    const bar = await tid('selection-bar').boundingBox();
+    const sel = await E((e) => { const r = e.canvas.getBoundingClientRect(), b = e.selectionScreenBox(); return { top: r.top + b.y, bottom: r.top + b.y + b.h }; });
+    assert(Math.abs(sel.top - (bar.y + bar.height) - 28) < 2 || Math.abs(bar.y - sel.bottom - 28) < 2, `선택 막대가 선택 옆 (${JSON.stringify(bar)} / ${JSON.stringify(sel)})`);
+    await waitSaved();
+
+    // 9) 버전을 올리면: 레이아웃의 모든 그림이 페이지 안, 2쪽 페이지 그림에 끌어 놓은 빨간 사진이 위·아래 끝까지 그려짐
+    await saveVersion(/구노에 올렸습니다/);
+    const n = await until(() => noteByTitle(P), '서버에 노트');
+    const html = await (await fetch(`${MOCK}/versions/${n.versionIds[n.versionIds.length - 1]}`)).text();
+    const docJson = JSON.parse(/data-strokes="([^"]+)"/.exec(html)[1].replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&'));
+    const Lu = docJson.layout, su = Lu.pageH + Lu.gap;
+    const imgs = docJson.strokes.filter((s) => s.tool === 'image');
+    assert(imgs.length === 3, `그림 3개 (${imgs.length})`);
+    for (const s of imgs) {
+      const [[ax, ay], [bx, by]] = s.points, pg = Math.floor(ay / su);
+      assert(ax >= 0 && bx <= Lu.pageW && ay >= pg * su && by <= pg * su + Lu.pageH, `올린 그림이 페이지 안 (${JSON.stringify(s.points)})`);
+    }
+    const srcs = [...html.matchAll(/src="(\/editor-inline-images\/[^"]+)"/g)].map((m) => m[1].replace(/&amp;/g, '&'));
+    assert(srcs.length === 2, `페이지 그림 2장 (${srcs.length})`);
+    const png2 = Buffer.from(await (await fetch(MOCK + srcs[1])).arrayBuffer()).toString('base64');
+    const red = imgs[0]; // 끌어 놓은 첫 사진 (2쪽)
+    const px = await page.evaluate(async ([b64, pts, top, pageW]) => {
+      const img = new Image(); img.src = `data:image/png;base64,${b64}`; await img.decode();
+      const k = img.naturalWidth / pageW, c = document.createElement('canvas'); c.width = img.naturalWidth; c.height = img.naturalHeight;
+      const x = c.getContext('2d'); x.drawImage(img, 0, 0);
+      const at = (wx, wy) => Array.from(x.getImageData(Math.round(wx * k), Math.round((wy - top) * k), 1, 1).data.slice(0, 3));
+      const [[ax, ay], [bx, by]] = pts, cx = (ax + bx) / 2;
+      return { top: at(cx - 100, ay + 3), bottom: at(cx, by - 3), below: at(cx, by + 6) };
+    }, [png2, red.points, Math.floor(red.points[0][1] / su) * su, Lu.pageW]);
+    const isRed = ([r, g, b]) => r > 150 && g < 90 && b < 90;
+    assert(isRed(px.top) && isRed(px.bottom) && !isRed(px.below), `2쪽 페이지 그림에 사진이 잘리지 않고 그려짐 (${JSON.stringify(px)})`);
+    await cdp.detach();
   });
 
   await check('오프라인 작성 기한 만료 → 편집 잠금, 기록은 보존', async () => {

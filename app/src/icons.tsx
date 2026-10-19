@@ -25,6 +25,7 @@ export const IcCheck = (p: P) => <svg {...base(p)}><path d="m5 12 5 5 9-10" /></
 export const IcPaper = (p: P) => <svg {...base(p)}><rect x="5" y="3" width="14" height="18" rx="2" /><path d="M5 9h14M5 15h14M11.5 9v12" strokeWidth={1.25} /></svg>;
 export const IcPlus = (p: P) => <svg {...base(p)}><path d="M12 5v14M5 12h14" /></svg>;
 export const IcClose = (p: P) => <svg {...base(p)}><path d="M6 6l12 12M18 6 6 18" /></svg>;
+export const IcRotate = (p: P) => <svg {...base(p)}><path d="M20 12a8 8 0 1 1-2.3-5.7L20 8.5" /><path d="M20 3.5v5h-5" /></svg>;
 export const IcTrash = (p: P) => <svg {...base(p)}><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" /></svg>;
 export const IcCopy = (p: P) => <svg {...base(p)}><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></svg>;
 export const IcSync = (p: P) => <svg {...base(p)}><path d="M20 11a8 8 0 0 0-14.5-4.5L4 8M4 13a8 8 0 0 0 14.5 4.5L20 16" /><path d="M4 3v5h5M20 21v-5h-5" /></svg>;

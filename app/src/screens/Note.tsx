@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { App as CapApp } from '@capacitor/app';
 import { db } from '../lib/db.ts';
 import { createVersion, getDoc, renameNote, requestRelease, saveWorking } from '../lib/notes.ts';
@@ -10,7 +10,8 @@ import ToolPalette, { INK_COLORS, INK_SIZES, type InsertKind, type PaletteState 
 import TableDialog, { type TableValue } from '../notebook/insert/TableDialog.tsx';
 import FormulaDialog, { type FormulaKind } from '../notebook/insert/FormulaDialog.tsx';
 import type { StructureResult } from '../notebook/insert/StructureSheet.tsx';
-import { IcBack, IcCheck, IcCopy, IcEdit, IcHand, IcHistory, IcLock, IcPaper, IcSync, IcText, IcTrash } from '../icons.tsx';
+import { placeSelectionBar } from '../notebook/selectionBar.ts';
+import { IcBack, IcCheck, IcCopy, IcEdit, IcHand, IcHistory, IcLock, IcPaper, IcRotate, IcSync, IcText, IcTrash } from '../icons.tsx';
 import { Boundary, Dialog, fmtDateTime, LockBanner } from '../ui.tsx';
 import Versions from './Versions.tsx';
 
@@ -30,6 +31,10 @@ function objectName(s: Stroke | null): string {
 }
 function editable(s: Stroke | null): boolean {
   return !!s && (s.tool === 'table' || s.tool === 'text' || (s.tool === 'image' && !!s.kind));
+}
+/** 돌릴 수 있는 것: 사진 (수식·구조식 그림은 다시 만들면 돌린 것이 풀리므로 제외) */
+function rotatable(s: Stroke | null): boolean {
+  return !!s && s.tool === 'image' && !s.kind;
 }
 
 function toBase64Svg(svg: string): string {
@@ -96,6 +101,7 @@ export default function Note({ id, onBack, onOpen, onRelogin }: { id: string; on
   const readOnly = !!block;
 
   const hostRef = useRef<HTMLDivElement>(null);
+  const barRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<Engine | null>(null);
   const docRef = useRef<NotebookDoc | null>(null);
@@ -130,6 +136,15 @@ export default function Note({ id, onBack, onOpen, onRelogin }: { id: string; on
   const [versionsKey, setVersionsKey] = useState(0);
   const [toast, setToast] = useState('');
   const [busy, setBusy] = useState(false);
+
+  /** 선택 막대를 선택한 것 바로 위(자리가 없으면 아래)로 — 옮기기·확대 중에도 따라가도록 리렌더 없이 직접 */
+  const placeBar = useCallback(() => {
+    const bar = barRef.current, e = engineRef.current, host = hostRef.current;
+    const sel = e?.selectionScreenBox();
+    if (!bar || !e || !host || !sel) return;
+    const p = placeSelectionBar(sel, { w: bar.offsetWidth, h: bar.offsetHeight }, { w: host.clientWidth, h: host.clientHeight }, e.insets);
+    Object.assign(bar.style, { left: `${p.x}px`, top: `${p.y}px`, transform: 'none' });
+  }, []);
 
   const say = useCallback((msg: string) => {
     setToast(msg);
@@ -208,7 +223,9 @@ export default function Note({ id, onBack, onOpen, onRelogin }: { id: string; on
         setHasSelection(!!sel);
         const picked = engine.selectedStrokes();
         setSelObj(picked.length === 1 ? picked[0] : null);
+        placeBar();
       },
+      onViewport() { placeBar(); },
     });
     engineRef.current = engine;
     // 진단·E2E 용 (기기 안에서만 보인다)
@@ -279,6 +296,7 @@ export default function Note({ id, onBack, onOpen, onRelogin }: { id: string; on
       if (!e) return;
       e.insets = o === 'rail' ? { top: 0, right: 0, bottom: 0, left: readOnlyRef.current ? 0 : 84 } : { top: 0, right: 0, bottom: readOnlyRef.current ? 0 : 88, left: 0 };
       e.resize();
+      placeBar();
     };
     const ro = new ResizeObserver(apply);
     ro.observe(host);
@@ -294,6 +312,9 @@ export default function Note({ id, onBack, onOpen, onRelogin }: { id: string; on
     return () => window.removeEventListener('pointerdown', close);
   }, [paperOpen]);
   useEffect(() => { if (readOnly) setPaperOpen(false); }, [readOnly]);
+
+  // 선택 막대가 뜨거나 버튼이 바뀌면(폭이 달라짐) 그리기 전에 자리 잡기
+  useLayoutEffect(() => { if (hasSelection) placeBar(); }, [hasSelection, selObj, placeBar]);
 
   // 처음 열 때 페이지 폭 맞춤
   useEffect(() => { if (loaded) engineRef.current?.fitWidth(); }, [loaded, orientation]);
@@ -544,12 +565,15 @@ export default function Note({ id, onBack, onOpen, onRelogin }: { id: string; on
         )}
 
         {hasSelection && !readOnly && (
-          <div className="selection-bar" role="toolbar" aria-label="선택한 항목" data-testid="selection-bar">
+          <div className="selection-bar" role="toolbar" aria-label="선택한 항목" data-testid="selection-bar" ref={barRef}>
             {editable(selObj) && (
               <button className="btn" onClick={editSelected} data-testid="edit-object"><IcEdit /> {objectName(selObj)} 고치기</button>
             )}
-            <button className="btn" onClick={() => engineRef.current?.duplicateSelection()}><IcCopy /> 복제</button>
-            <button className="btn danger" onClick={() => engineRef.current?.deleteSelection()}><IcTrash /> 삭제</button>
+            {rotatable(selObj) && (
+              <button className="btn" onClick={() => { if (selObj) void engineRef.current?.rotateImage(selObj); }} data-testid="sel-rotate"><IcRotate /> 90° 회전</button>
+            )}
+            <button className="btn" onClick={() => engineRef.current?.duplicateSelection()} data-testid="sel-duplicate"><IcCopy /> 복제</button>
+            <button className="btn danger" onClick={() => engineRef.current?.deleteSelection()} data-testid="sel-delete"><IcTrash /> 삭제</button>
           </div>
         )}
       </div>
