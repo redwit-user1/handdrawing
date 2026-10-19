@@ -42,13 +42,18 @@ Capacitor 8 + React 19 + TypeScript.
 ```bash
 cd handdrawing/app
 npm install
-npm run mock        # 모의 구노 서버 http://localhost:8787 (researcher1 / goono1234)
+npm run mock        # 모의 구노 서버 http://localhost:8787 (researcher1 / goono1234, researcher2 / goono1234)
 npm run dev         # http://localhost:5173 — 브라우저에서 바로 확인(태블릿 크기로)
 ```
 
 모의 서버 화면 `http://localhost:8787/` 에서 앱이 올린 노트·버전(서버 수신 시각, 기기 작성 시각, 손글씨 이미지)을 확인할 수 있다.
 테스트용 관리 API: `POST /__admin/notes/{noteMno}/reclaim`(편집권 회수), `/__admin/notes/{noteMno}/status`(점검 요청 흉내),
 `/__admin/devices/{deviceId}/revoke`(기기 폐기), `/__admin/config {"tokenTtlMs":8000}`(오프라인 기한 단축).
+QR 연결 시험: `POST /__admin/pairing-code {"loginId":"researcher1","ttlMs":300000}` → `{code, qrPayload, expiresAt}`(웹의 "QR 띄우기" 대신.
+코드는 일회용·5분, 새로 받으면 같은 사용자의 이전 코드는 무효). 앱은 `POST /api/app/v1/devices/pair` 로 연결한다.
+`POST /__admin/config` 로 `passwordLogin`(`false`면 `/devices/register` 가 403 `PASSWORD_LOGIN_DISABLED`, 기본 `true`),
+`appEnabled`(`false`면 모든 `/api/app/v1` 요청이 403 `APP_DISABLED`), `blockedDeviceIds`(403 `DEVICE_NOT_ALLOWED`)를 바꾼다.
+`/__admin/state` 의 `pairingCodes` 에서 발급·사용·무효 상태를 볼 수 있고, `/__admin/reset` 은 설정도 처음으로 되돌린다.
 
 ## 테스트
 

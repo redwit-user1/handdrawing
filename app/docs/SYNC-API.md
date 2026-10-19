@@ -24,12 +24,82 @@ Goono-ELN 서버 구현의 기준이며, 개발·테스트용 구현은 `app/moc
 - 인증: `Authorization: Bearer {기기 토큰}` (기기 등록 제외). 웹 로그인 세션과 **분리**한다 —
   웹의 동시 세션 1개 제한(`maximumSessions(1)`)에 걸리지 않게 별도 필터 체인으로 처리.
 - 오류 본문: `{ "error": { "code": "…", "message": "…" } }`
+- 기관이 태블릿 연결을 꺼 두었으면(`app.enabled=false`) **모든 `/api/app/v1` 요청**이 403 `APP_DISABLED`일 수
+  있다(연결·갱신·동기화 모두). 앱은 이 코드를 받으면 연결 안내 문구를 보여 준다.
 - 시각: ISO-8601 (UTC). 서버 시각이 기준이며 기기 시각은 참고 값으로만 저장한다.
 - CORS: 앱 웹뷰 오리진 `capacitor://localhost`(iOS), `https://localhost`(Android)를 허용한다.
 
-## 1. 기기 등록 `POST /devices/register`
+## 0. 연결(QR) — 기본 경로
 
-인증 없음. 구노 계정으로 로그인해 기기 토큰을 받는다.
+앱은 비밀번호를 받지 않는다. 구노 웹에 로그인한 사용자가 **일회용 연결 코드**(QR)를 띄우고, 태블릿이
+그것을 읽어 기기 토큰을 받는다. 계정 비밀번호가 태블릿을 거치지 않고, SSO·2단계 인증을 쓰는 기관도
+같은 방식으로 연결된다.
+
+### 0.1 연결 코드 발급 `POST /api/eln/app/pairing-code` (웹 · 로그인 세션)
+
+웹 화면(내 설정 ▸ 태블릿 연결)에서 부른다. 기존 웹 로그인 세션·CSRF 규칙을 그대로 따르며 본문은 없다.
+
+```json
+응답 200 {
+  "code": "K7Q2-M9XD",
+  "qrPayload": "goono-note://pair?server=https%3A%2F%2Feln.example.com&code=K7Q2-M9XD",
+  "expiresAt": "2026-10-18T09:05:00Z"
+}
+```
+
+- **코드 형식**: 8자, 문자 집합 `23456789ABCDEFGHJKMNPQRSTUVWXYZ`(0·O·1·I·L 제외). 화면에는 `XXXX-XXXX`로
+  표시한다. 암호학적 난수(`SecureRandom`)로 만든다.
+- **정규화**: 서버·앱 모두 **대문자로 바꾸고 `-`·공백을 지운 뒤** 비교한다. 서버는 정규화한 값의
+  해시(`CODE_HASH`)만 저장한다. 소문자·하이픈 없음·앞뒤 공백으로 입력해도 같은 코드다.
+- **일회용, 5분 유효**: `expiresAt`까지만 쓸 수 있고, 연결에 한 번 성공하면 다시 쓸 수 없다.
+- **재발급 무효화**: 같은 사용자가 새 코드를 받으면 그 사용자의 이전 미사용 코드는 무효가 된다.
+- **QR 내용**: `goono-note://pair?server=<https URL>&code=<XXXX-XXXX>` (두 값 모두 URL 인코딩).
+  앱은 scheme이 `goono-note`·host가 `pair`가 아니거나, `server`가 https가 아니거나(개발 빌드만 http 허용),
+  `code`가 정규화 후 8자가 아니면 연결을 시도하지 않고 거부한다.
+- 기관이 태블릿 연결을 꺼 두었으면(`app.enabled=false`) 이 API도 거부한다(웹은 메뉴를 숨긴다).
+
+### 0.2 연결 `POST /devices/pair`
+
+인증 없음(익명). 코드가 곧 자격이다.
+
+```json
+요청 {
+  "pairingCode": "K7Q2-M9XD",   // 정규화 전 값도 허용(서버가 정규화)
+  "device": { "id": "기기가 만든 UUID", "name": "연구실 iPad", "platform": "ios|android|web",
+              "model": "iPad14,5", "appVersion": "0.1.0" }
+}
+응답 200 {                         // §1 /devices/register 와 같은 형식
+  "token": "…", "tokenExpiresAt": "…Z", "offlineGraceDays": 14,
+  "user": { "userMno": 12, "loginId": "researcher1", "name": "김연구" },
+  "serverTime": "…"
+}
+```
+
+오류:
+
+| 상태 | 코드 | 의미 |
+|---|---|---|
+| 401 | `INVALID_PAIRING_CODE` | 코드가 없거나 만료되었거나 이미 사용됨(무효화된 코드 포함). 이유는 구분해 알려 주지 않는다 |
+| 403 | `APP_DISABLED` | 기관이 태블릿 연결을 끔 |
+| 403 | `DEVICE_NOT_ALLOWED` | 이 기기는 연결할 수 없음(기관 정책). 이때 코드는 소비하지 않는다 |
+| 429 | `TOO_MANY_ATTEMPTS` | 실패가 너무 많음. `Retry-After` 헤더(초)가 풀릴 때까지의 시간 |
+
+- **연결 실패 제한**: **같은 IP에서 10분 안에 5번 실패하면 429.** 실패는 `INVALID_PAIRING_CODE`만 센다.
+  막혀 있는 동안은 맞는 코드도 429이고, 429 응답 자체는 실패 횟수를 늘리지 않는다. `Retry-After`는
+  가장 오래된 실패가 10분 창에서 빠질 때까지 남은 초다. (틀린 코드는 어느 코드의 시도인지 알 수 없으므로
+  코드 단위가 아니라 IP 단위로 제한한다 — 설계 §6.0 "틀린 시도 5회면 폐기"의 구현 방식.)
+- **기기 묶음**: 서버의 기기 기록은 **(기기 ID, 사용자)** 단위. 같은 사용자가 같은 기기를 다시 연결하면 토큰만 새로 발급. 다른 사용자가 같은 기기를 연결하면 새 묶음이 생기고, 이전 사용자의 "기기에서 작성 중" 노트는 웹에서 편집권 회수로 정리한다.
+  따라서 노트의 편집권(`editLocation.deviceId`)은 **그 노트의 주인 + 그 기기**에게만 있다. 같은 기기를 다른
+  사용자가 연결해도 남의 노트를 올리거나 반납할 수 없다(409 `NOT_EDIT_OWNER`).
+- **다시 연결**: 토큰 만료(`TOKEN_EXPIRED`)·기기 사용 중지(`DEVICE_REVOKED`) 모두 앱의 "다시 연결" 버튼으로
+  새 QR을 읽는다. 사용 중지된 묶음에 같은 사용자가 다시 연결하면 사용 중지가 풀리고 새 토큰이 나간다.
+  같은 계정이면 앱은 기기 데이터를 이어 쓰고, 다른 계정이면 올리지 않은 기록이 있는 한 거부한다(앱 규칙).
+
+## 1. 기기 등록 `POST /devices/register` (보조 경로)
+
+인증 없음. 구노 계정의 아이디·비밀번호로 기기 토큰을 받는다. **서버 설정
+`app.device.password-login.enabled`가 켜졌을 때만** 동작하며, 꺼져 있으면 403 `PASSWORD_LOGIN_DISABLED`.
+운영 서버의 기본값은 꺼짐이고, 앱의 비밀번호 화면도 개발·체험 빌드(`ALLOW_DEMO`)에만 보인다.
 
 ```json
 요청 {
@@ -46,7 +116,8 @@ Goono-ELN 서버 구현의 기준이며, 개발·테스트용 구현은 `app/moc
   "serverTime": "…"
 }
 ```
-오류: 401 `INVALID_CREDENTIALS`, 403 `DEVICE_NOT_ALLOWED`
+오류: 401 `INVALID_CREDENTIALS`, 403 `PASSWORD_LOGIN_DISABLED`, 403 `DEVICE_NOT_ALLOWED`
+(기기 묶음 규칙은 §0.2와 같다)
 
 ## 2. 토큰 갱신 `POST /devices/refresh`
 
@@ -132,6 +203,10 @@ Goono-ELN 서버 구현의 기준이며, 개발·테스트용 구현은 `app/moc
 
 | 테이블 | 컬럼 | 설명 |
 |---|---|---|
-| `PL_ELN_NOTE` | `EDIT_LOCATION_CCD` (`WEB`/`DEVICE`), `EDIT_DEVICE_ID`, `CLIENT_NOTE_ID` | 편집 위치 |
+| `PL_ELN_NOTE` | `EDIT_LOCATION_CCD` (`WEB`/`DEVICE`), `EDIT_DEVICE_MNO`(→ `PL_APP_DEVICE.DEVICE_MNO`), `CLIENT_NOTE_ID` | 편집 위치. 편집하는 곳은 (기기, 사용자) 묶음이므로 기기 ID 문자열이 아니라 대리키를 가리킨다 |
 | `PL_ELN_NOTE_EDITOR` | `SOURCE_CCD` (`WEB`/`APP`), `DEVICE_ID`, `DEVICE_WRITTEN_DT`, `CLIENT_VERSION_ID`(유니크), `CONTENT_HASH` | 버전 출처 |
-| 신규 `PL_APP_DEVICE` | `DEVICE_ID`, `USER_MNO`, `NAME`, `PLATFORM`, `TOKEN_HASH`, `TOKEN_EXPIRES_DT`, `REVOKED_YN`, `LAST_SEEN_DT` | 기기 |
+| 신규 `PL_APP_DEVICE` | `DEVICE_MNO`(PK, 대리키), `DEVICE_ID`, `USER_MNO`, `NAME`, `PLATFORM`, `MODEL`, `APP_VERSION`, `TOKEN_HASH`, `TOKEN_EXPIRES_DT`, `REVOKED_YN`, `LAST_SEEN_DT`, `UNIQUE(DEVICE_ID, USER_MNO)` | 기기. 같은 물리 기기를 다른 사용자가 연결하면 행이 하나 더 생긴다 |
+| 신규 `PL_APP_PAIRING_CODE` | `CODE_HASH`(PK, 정규화한 코드의 해시), `USER_MNO`, `EXPIRES_DT`, `USED_DT`, `CREATE_DT` | 연결 코드(일회용·5분). 새 코드 발급 시 같은 `USER_MNO`의 `USED_DT IS NULL` 행은 `EXPIRES_DT`를 현재로 당겨 무효화. 만료·사용된 행은 주기적으로 삭제 |
+
+연결 실패 횟수(IP 단위 5회/10분)는 DB에 두지 않고 서버 메모리(또는 기존 레이트 리미터)로 처리해도 된다.
+서버 설정: `app.enabled`(기관의 태블릿 연결 사용 여부), `app.device.password-login.enabled`(기본 꺼짐).
