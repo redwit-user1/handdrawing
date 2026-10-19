@@ -58,7 +58,8 @@ export async function demoCall(path: string, init: RequestInit): Promise<unknown
   const method = (init.method ?? 'GET').toUpperCase();
   const json = () => (typeof init.body === 'string' ? JSON.parse(init.body) : {}) as Record<string, unknown>;
 
-  if (method === 'POST' && path === '/devices/register') {
+  // 체험 서버는 코드를 따지지 않는다 — 연결 코드(QR) 화면도 그대로 체험할 수 있게 같은 응답을 준다
+  if (method === 'POST' && (path === '/devices/register' || path === '/devices/pair')) {
     const b = json() as { device?: { id?: string } };
     s.deviceId = b.device?.id ?? 'demo-device';
     save(s);

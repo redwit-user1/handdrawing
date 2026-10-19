@@ -1,5 +1,6 @@
 import { Device } from '@capacitor/device';
-import { api, normalizeServerUrl } from './api.ts';
+import { api, normalizeServerUrl, type DeviceInfo, type RegisterResponse } from './api.ts';
+import { normalizeCode } from './pairing.ts';
 import { isDemoServer, resetDemo } from './demo.ts';
 import { secureGet, secureSet, uuid } from './crypto.ts';
 import { db } from './db.ts';
@@ -36,13 +37,7 @@ export async function hasUnsentWork(): Promise<boolean> {
   return false;
 }
 
-/**
- * 로그인(기기 등록). 같은 사용자의 재로그인이면 기기 데이터를 그대로 이어 쓰고,
- * 다른 사용자라면 앞 사용자의 미전송 기록이 없을 때만 기기 데이터를 비우고 시작한다.
- */
-export async function login(serverUrl: string, loginId: string, password: string, deviceName: string): Promise<Session> {
-  const url = normalizeServerUrl(serverUrl);
-  const id = await deviceId();
+async function deviceInfo(deviceName: string): Promise<DeviceInfo> {
   let platform = 'web';
   let model = 'browser';
   try {
@@ -50,9 +45,25 @@ export async function login(serverUrl: string, loginId: string, password: string
     platform = info.platform;
     model = info.model;
   } catch { /* 웹 */ }
+  return { id: await deviceId(), name: deviceName, platform, model, appVersion: APP_VERSION };
+}
+
+/**
+ * 연결(기기 등록) 공통 처리 — 기기 정보를 만들어 `request` 로 서버에 등록하고 세션을 저장한다.
+ * 같은 사용자의 재연결이면 기기 데이터를 그대로 이어 쓰고,
+ * 다른 사용자라면 앞 사용자의 미전송 기록이 없을 때만 기기 데이터를 비우고 시작한다.
+ */
+async function connect(
+  serverUrl: string,
+  deviceName: string,
+  request: (url: string, device: DeviceInfo) => Promise<RegisterResponse>,
+): Promise<Session> {
+  const url = normalizeServerUrl(serverUrl);
+  const device = await deviceInfo(deviceName);
+  const id = device.id;
 
   const prev = await db.getSession();
-  const r = await api.register(url, loginId, password, { id, name: deviceName, platform, model, appVersion: APP_VERSION });
+  const r = await request(url, device);
 
   if (prev && (prev.user.userMno !== r.user.userMno || prev.serverUrl !== url)) {
     if (await hasUnsentWork()) {
@@ -77,6 +88,18 @@ export async function login(serverUrl: string, loginId: string, password: string
   };
   await db.putSession(session);
   return session;
+}
+
+/** QR 연결 — 연결 코드(소문자·하이픈·공백 허용)를 정규화해 보내고 기기를 등록한다 */
+export async function pair(serverUrl: string, pairingCode: string, deviceName: string): Promise<Session> {
+  const code = normalizeCode(pairingCode);
+  if (!code) throw new Error('연결 코드가 올바르지 않습니다.');
+  return connect(serverUrl, deviceName, (url, device) => api.pair(url, code, device));
+}
+
+/** 아이디·비밀번호 로그인 — 개발·체험 빌드 전용 보조 경로 */
+export async function login(serverUrl: string, loginId: string, password: string, deviceName: string): Promise<Session> {
+  return connect(serverUrl, deviceName, (url, device) => api.register(url, loginId, password, device));
 }
 
 /** 로그아웃 — 올리지 않은 기록이 있으면 거부한다. 기기 데이터는 모두 지운다 */

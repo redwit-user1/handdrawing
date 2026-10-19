@@ -1,4 +1,5 @@
 import { DemoError, demoCall, isDemoServer } from './demo.ts';
+import { normalizeServerUrl } from './pairing.ts';
 import type { EditLocation, Project, ServerNote, ServerStatus, User } from './types.ts';
 
 /**
@@ -11,6 +12,8 @@ export class ApiError extends Error {
     readonly code: string,
     message: string,
     readonly body: Record<string, unknown> = {},
+    /** 429 응답의 Retry-After 헤더(초) */
+    readonly retryAfterSec?: number,
   ) {
     super(message);
   }
@@ -35,9 +38,7 @@ export interface VersionUpload {
 const JSON_TIMEOUT = 15_000;
 const UPLOAD_TIMEOUT = 120_000;
 
-export function normalizeServerUrl(url: string): string {
-  return url.trim().replace(/\/+$/, '');
-}
+export { normalizeServerUrl };
 
 async function call<T>(serverUrl: string, path: string, init: RequestInit & { token?: string; timeout?: number } = {}): Promise<T> {
   const { token, timeout = JSON_TIMEOUT, ...rest } = init;
@@ -67,12 +68,17 @@ async function call<T>(serverUrl: string, path: string, init: RequestInit & { to
   try { body = await res.json(); } catch { /* 본문 없음 */ }
   if (!res.ok) {
     const e = (body.error ?? {}) as { code?: string; message?: string };
-    throw new ApiError(res.status, e.code ?? `HTTP_${res.status}`, e.message ?? `서버 오류 (${res.status})`, body);
+    const retryAfter = Number(res.headers.get('Retry-After'));
+    throw new ApiError(res.status, e.code ?? `HTTP_${res.status}`, e.message ?? `서버 오류 (${res.status})`, body,
+      Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : undefined);
   }
   return body as T;
 }
 
 export const api = {
+  pair: (serverUrl: string, pairingCode: string, device: DeviceInfo) =>
+    call<RegisterResponse>(serverUrl, '/devices/pair', { method: 'POST', body: JSON.stringify({ pairingCode, device }) }),
+
   register: (serverUrl: string, loginId: string, password: string, device: DeviceInfo) =>
     call<RegisterResponse>(serverUrl, '/devices/register', { method: 'POST', body: JSON.stringify({ loginId, password, device }) }),
 
