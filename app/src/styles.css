@@ -222,6 +222,10 @@ svg { flex: none; }
 .status-pop dt, .version-meta dt { color: var(--muted); }
 .status-pop dd, .version-meta dd { margin: 0; font-variant-numeric: tabular-nums; }
 
+/* 필기 화면에서는 글자 선택·길게 누르기 메뉴를 끈다 — iPad 에서 펜을 누르고 있으면 주변 글자가 선택되며
+   (영역 선택처럼 보임) 진행 중인 획이 pointercancel 로 끊긴다. 입력칸만 예외 */
+.note-screen { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+.note-screen input, .note-screen textarea, .note-screen [contenteditable='true'] { -webkit-user-select: text; user-select: text; -webkit-touch-callout: default; }
 .canvas-host { position: relative; flex: 1; min-height: 0; overflow: hidden; touch-action: none; }
 .canvas-host canvas { display: block; touch-action: none; }
 .canvas-host[data-tool='text'] canvas { cursor: text; }

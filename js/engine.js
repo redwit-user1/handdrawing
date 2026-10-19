@@ -536,6 +536,12 @@ class DrawingEngine {
     c.addEventListener('pointerleave', e => { if (!this.drawing) this.eraserPos = null, this.requestRender(); });
     c.addEventListener('wheel', e => this._onWheel(e), { passive: false });
     c.addEventListener('contextmenu', e => e.preventDefault());
+    // iPad(Safari·WKWebView): 펜·손가락을 누르고 있으면 글자 선택·돋보기·두 번 탭 확대가 끼어들어
+    // 진행 중인 획이 pointercancel 로 끊긴다 — 캔버스 위 터치의 기본 동작을 막는다(포인터 이벤트는 그대로 온다)
+    const stopNative = e => { if (e.cancelable) e.preventDefault(); };
+    c.addEventListener('touchstart', stopNative, { passive: false });
+    c.addEventListener('touchmove', stopNative, { passive: false });
+    c.addEventListener('selectstart', stopNative);
     window.addEventListener('resize', () => this.resize());
   }
 
