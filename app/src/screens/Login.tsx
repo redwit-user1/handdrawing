@@ -9,7 +9,8 @@ export const LAST_SERVER_KEY = 'goono-note.last-server';
 /** 체험판 빌드(VITE_DEMO=1): 서버 없이 체험 서버로만. VITE_ALLOW_DEMO=1·개발 서버: 연결 화면에 "서버 없이 체험하기"·비밀번호 연결 */
 export const DEMO_ONLY = import.meta.env.VITE_DEMO === '1';
 export const ALLOW_DEMO = DEMO_ONLY || import.meta.env.VITE_ALLOW_DEMO === '1' || import.meta.env.DEV;
-export const DEFAULT_SERVER = (import.meta.env.VITE_DEFAULT_SERVER as string | undefined) ?? 'http://localhost:8787';
+/** 서버 주소 입력칸의 처음 값. 운영 빌드는 비워 둔다(기관 주소를 직접 넣는다). 개발·체험 빌드만 로컬 모의 서버 */
+export const DEFAULT_SERVER = (import.meta.env.VITE_DEFAULT_SERVER as string | undefined) ?? (ALLOW_DEMO ? 'http://localhost:8787' : '');
 
 export function lastServer(): string | null {
   try { return localStorage.getItem(LAST_SERVER_KEY); } catch { return null; }
