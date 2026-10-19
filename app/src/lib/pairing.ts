@@ -7,6 +7,26 @@ export function normalizeServerUrl(url: string): string {
   return url.trim().replace(/\/+$/, '');
 }
 
+/**
+ * 같은 서버인지 비교할 때 쓰는 정규형 — origin(scheme·호스트 소문자, 기본 포트 생략) + 끝 슬래시를 뗀 경로.
+ * 경로의 대소문자는 그대로 둔다(서버가 구분할 수 있다). URL 이 아니면 정리한 문자열 그대로.
+ */
+export function canonicalServerUrl(url: string): string {
+  const s = normalizeServerUrl(url);
+  try {
+    const u = new URL(s);
+    if (u.origin === 'null') return s;
+    return u.origin + u.pathname.replace(/\/+$/, '');
+  } catch {
+    return s;
+  }
+}
+
+/** `HTTPS://ELN.example.org:443/` 와 `https://eln.example.org` 는 같은 서버 */
+export function sameServer(a: string, b: string): boolean {
+  return canonicalServerUrl(a) === canonicalServerUrl(b);
+}
+
 /** 연결 코드 문자 집합 — 헷갈리는 0·O·1·I·L 제외 */
 export const CODE_ALPHABET = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
 const CODE_LENGTH = 8;

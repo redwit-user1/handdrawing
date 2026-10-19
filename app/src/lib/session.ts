@@ -1,6 +1,6 @@
 import { Device } from '@capacitor/device';
 import { api, normalizeServerUrl, type DeviceInfo, type RegisterResponse } from './api.ts';
-import { normalizeCode } from './pairing.ts';
+import { normalizeCode, sameServer } from './pairing.ts';
 import { isDemoServer, resetDemo } from './demo.ts';
 import { secureGet, secureSet, uuid } from './crypto.ts';
 import { db } from './db.ts';
@@ -65,7 +65,7 @@ async function connect(
   const prev = await db.getSession();
   const r = await request(url, device);
 
-  if (prev && (prev.user.userMno !== r.user.userMno || prev.serverUrl !== url)) {
+  if (prev && (prev.user.userMno !== r.user.userMno || !sameServer(prev.serverUrl, url))) {
     if (await hasUnsentWork()) {
       // 서버 연결은 이미 끝나 방금 쓴 코드는 사용되었다 → 새 QR 이 필요하다고 알린다
       throw new Error(`이 기기에 ${prev.user.name}(${prev.user.loginId}) 님의 올리지 않은 기록이 있어 다른 계정으로 연결할 수 없습니다. `

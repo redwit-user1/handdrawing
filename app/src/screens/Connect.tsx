@@ -3,7 +3,7 @@ import { defaultDeviceName, pair } from '../lib/session.ts';
 import { isDemoServer } from '../lib/demo.ts';
 import { sessionLock } from '../lib/rules.ts';
 import {
-  BAD_CODE_INPUT_MESSAGE, PARSE_ERROR_MESSAGES, formatCode, normalizeCode, normalizeServerUrl, pairErrorMessage, parsePairingUri,
+  BAD_CODE_INPUT_MESSAGE, PARSE_ERROR_MESSAGES, formatCode, normalizeCode, normalizeServerUrl, pairErrorMessage, parsePairingUri, sameServer,
   type PairingTarget,
 } from '../lib/pairing.ts';
 import { canScanQr, scanPairingQr } from '../lib/scan.ts';
@@ -30,7 +30,7 @@ export default function Connect({ relogin, target, linkError, onDone, onCancel }
   relogin?: Session | null; target?: PairingTarget | null; linkError?: string; onDone: () => void; onCancel?: () => void;
 }) {
   /** 다시 연결 중이면 지금 서버의 QR 만 받는다 */
-  const wrongServer = (t: PairingTarget) => (relogin && normalizeServerUrl(relogin.serverUrl) !== t.serverUrl
+  const wrongServer = (t: PairingTarget) => (relogin && !sameServer(relogin.serverUrl, t.serverUrl)
     ? `이 기기는 ${hostOf(relogin.serverUrl)}에 연결되어 있습니다. 그 서버의 구노 웹에서 띄운 QR을 읽어 주세요.`
     : '');
   const [stage, setStage] = useState<Stage>(() => (target && !wrongServer(target) ? 'confirm' : 'start'));

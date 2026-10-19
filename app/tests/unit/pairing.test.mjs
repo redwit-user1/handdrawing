@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  CODE_ALPHABET, REPEATED_LINK_MS, formatCode, isRepeatedLink, normalizeCode, pairErrorMessage, pairingFromUrl, parsePairingUri,
+  CODE_ALPHABET, REPEATED_LINK_MS, canonicalServerUrl, formatCode, isRepeatedLink, normalizeCode, pairErrorMessage, pairingFromUrl,
+  parsePairingUri, sameServer,
 } from '../../src/lib/pairing.ts';
 
 const uri = (server, code) =>
@@ -115,4 +116,19 @@ test('same deep link arriving twice at launch (getLaunchUrl + appUrlOpen) is tak
   // 시간이 지나 같은 링크를 다시 열거나, 다른 링크면 받는다
   assert.equal(isRepeatedLink(prev, url, 1000 + REPEATED_LINK_MS), false);
   assert.equal(isRepeatedLink(prev, uri('https://eln.example.org', 'K7Q2-M9XE'), 1001), false);
+});
+
+test('server url canonical form: host case, default port, trailing slash', () => {
+  assert.equal(canonicalServerUrl(' HTTPS://ELN.Example.org:443/ '), 'https://eln.example.org');
+  assert.equal(canonicalServerUrl('http://Localhost:80'), 'http://localhost');
+  assert.equal(canonicalServerUrl('http://localhost:8787/'), 'http://localhost:8787');
+  assert.equal(canonicalServerUrl('https://eln.example.org/Goono//'), 'https://eln.example.org/Goono');
+  assert.equal(canonicalServerUrl('not a url/'), 'not a url');
+  assert.ok(sameServer('https://ELN.example.org:443/', 'https://eln.example.org'));
+  assert.ok(sameServer('https://eln.example.org/goono/', 'https://eln.example.org/goono'));
+  // 다른 포트·scheme·경로(대소문자 포함)는 다른 서버
+  assert.ok(!sameServer('https://eln.example.org:8443', 'https://eln.example.org'));
+  assert.ok(!sameServer('http://eln.example.org', 'https://eln.example.org'));
+  assert.ok(!sameServer('https://eln.example.org/Goono', 'https://eln.example.org/goono'));
+  assert.ok(!sameServer('https://eln.example.org', 'https://other.example.org'));
 });
