@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { CODE_ALPHABET, formatCode, normalizeCode, pairErrorMessage, pairingFromUrl, parsePairingUri } from '../../src/lib/pairing.ts';
+import {
+  CODE_ALPHABET, REPEATED_LINK_MS, formatCode, isRepeatedLink, normalizeCode, pairErrorMessage, pairingFromUrl, parsePairingUri,
+} from '../../src/lib/pairing.ts';
 
 const uri = (server, code) =>
   `goono-note://pair?server=${encodeURIComponent(server)}&code=${encodeURIComponent(code)}`;
@@ -102,4 +104,15 @@ test('pair url with bad contents reports the cause instead of being ignored', ()
   assert.deepEqual(pairingFromUrl('goono-note://pair?code=K7Q2-M9XD'), { error: 'INSECURE_SERVER' });
   assert.deepEqual(pairingFromUrl('goono-note://pair?server=https%3A%2F%2Fx.com'), { error: 'BAD_CODE' });
   assert.deepEqual(pairingFromUrl(uri('https://x.com', 'K7Q2-M9XDA')), { error: 'BAD_CODE' });
+});
+
+test('same deep link arriving twice at launch (getLaunchUrl + appUrlOpen) is taken once', () => {
+  const url = uri('https://eln.example.org', 'K7Q2-M9XD');
+  assert.equal(isRepeatedLink(null, url, 1000), false);
+  const prev = { url, at: 1000 };
+  assert.equal(isRepeatedLink(prev, url, 1000), true);
+  assert.equal(isRepeatedLink(prev, url, 1000 + REPEATED_LINK_MS - 1), true);
+  // 시간이 지나 같은 링크를 다시 열거나, 다른 링크면 받는다
+  assert.equal(isRepeatedLink(prev, url, 1000 + REPEATED_LINK_MS), false);
+  assert.equal(isRepeatedLink(prev, uri('https://eln.example.org', 'K7Q2-M9XE'), 1001), false);
 });

@@ -57,6 +57,17 @@ export function pairingFromUrl(url: string, opts: { allowHttp?: boolean } = {}):
   return 'error' in r && r.error === 'NOT_PAIRING_QR' ? null : r;
 }
 
+/** 같은 딥링크가 이 시간 안에 다시 오면 한 번 온 것으로 본다 */
+export const REPEATED_LINK_MS = 3000;
+
+/**
+ * 앱이 링크로 켜지면 같은 URL 이 두 길로 올 수 있다 — `App.getLaunchUrl()`(Android 콜드 스타트는 이것뿐)과
+ * `appUrlOpen` 이벤트(iOS 는 켜질 때도 보낸다). 직전에 받은 링크와 같은 URL 이 곧바로 다시 오면 true(무시).
+ */
+export function isRepeatedLink(prev: { url: string; at: number } | null, url: string, at: number): boolean {
+  return prev != null && prev.url === url && at - prev.at >= 0 && at - prev.at < REPEATED_LINK_MS;
+}
+
 /** 엉뚱한 QR 을 읽었을 때 — 연결을 시도하지 않고 원인을 알려 준다 */
 export const PARSE_ERROR_MESSAGES: Record<PairingError, string> = {
   NOT_PAIRING_QR: '구노 연구노트 연결용 QR이 아닙니다. 구노 웹에서 띄운 연결 QR을 읽어 주세요.',

@@ -151,7 +151,7 @@ npm run ios:dev        # 체험 모드 포함 빌드 → cap sync ios → Xcode 
 - iPad Scribble(펜으로 입력칸에 쓰면 글자로 바뀜)은 캔버스에서는 동작하지 않는다(의도: 필기는 필기로 남긴다).
 - 구노 서버가 기관 내부망(사설 IP)일 때 WebView의 로컬 네트워크 접근 정책(Chromium LNA) — E2E에서는 헤드리스 검사를 껐다.
 - **QR 스캔**(`@capacitor/barcode-scanner`): 카메라 권한 안내문·허용/거부, 구노 웹 QR 인식, 닫기(취소) 때 첫 화면으로 돌아오는지, 권한 거부 시 "코드 직접 입력" 안내. 네이티브 빌드 환경이 없어 에뮬레이션에서는 확인하지 못했다.
-- **딥링크**: 기본 카메라 앱으로 QR을 읽거나 `goono-note://pair?…` 링크를 열었을 때 앱이 확인 단계로 열리는지(앱이 꺼져 있을 때·켜져 있을 때 모두). Android 는 `adb shell am start -a android.intent.action.VIEW -d "goono-note://pair?server=…&code=…"`, iOS 는 `xcrun simctl openurl booted "goono-note://pair?…"`.
+- **딥링크**: 기본 카메라 앱으로 QR을 읽거나 `goono-note://pair?…` 링크를 열었을 때 앱이 확인 단계로 열리는지(앱이 꺼져 있을 때·켜져 있을 때 모두. 꺼져 있다가 링크로 켜지면 `App.getLaunchUrl()`로, 켜져 있으면 `appUrlOpen` 이벤트로 받고, 두 길로 같은 링크가 오면 한 번만 받는다). Android 는 `adb shell am start -a android.intent.action.VIEW -d "goono-note://pair?server=…&code=…"`, iOS 는 `xcrun simctl openurl booted "goono-note://pair?…"`.
 - 키체인/키스토어 키 보존: 앱 삭제 후 재설치 시 키가 사라지면 기기 데이터는 복구 불가(설계상 의도, 원본은 서버).
 
 ## 구노 ELN 쪽 남은 일

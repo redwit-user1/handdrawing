@@ -3,7 +3,7 @@ import { Network } from '@capacitor/network';
 import { App as CapApp } from '@capacitor/app';
 import { db } from './db.ts';
 import { syncNow, type SyncResult } from './sync.ts';
-import { pairingFromUrl } from './pairing.ts';
+import { isRepeatedLink, pairingFromUrl } from './pairing.ts';
 import { touchClock } from './session.ts';
 import type { LocalNote, Meta, Session } from './types.ts';
 
@@ -40,12 +40,17 @@ export function useApp(): AppState {
 export const getState = (): AppState => state;
 
 let pairLinkSeq = 0;
+let lastLink: { url: string; at: number } | null = null;
 /**
  * 딥링크 수신. `goono-note://pair` 가 아닌 URL 은 우리 것이 아니므로 무시한다.
  * http 서버 허용 여부는 화면(개발 빌드 여부)이 정하므로 여기서는 "우리 링크인가"만 가린다.
+ * 켜질 때 getLaunchUrl·appUrlOpen 두 길로 같은 링크가 오면 한 번만 받는다.
  */
 export function openUrl(url: string): void {
   if (!pairingFromUrl(url, { allowHttp: true })) return;
+  const at = Date.now();
+  if (isRepeatedLink(lastLink, url, at)) return;
+  lastLink = { url, at };
   set({ pairLink: { id: ++pairLinkSeq, url } });
 }
 export function clearPairLink(): void {
@@ -99,6 +104,11 @@ export async function start(): Promise<void> {
   });
   await CapApp.addListener('resume', () => { void touchClock().then(reload).then(sync); });
   await CapApp.addListener('appUrlOpen', (e) => openUrl(e.url));
+  // 링크로 앱이 켜진 경우: Android 는 켜질 때의 인텐트를 appUrlOpen 으로 보내지 않는다(실행 중에 온 새 인텐트만) → 직접 읽는다
+  try {
+    const launch = await CapApp.getLaunchUrl();
+    if (launch?.url) openUrl(launch.url);
+  } catch { /* 웹 */ }
 
   await reload();
   if (state.session) {
