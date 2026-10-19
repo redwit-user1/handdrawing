@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { App as CapApp } from '@capacitor/app';
 import { db } from '../lib/db.ts';
 import { createVersion, getDoc, renameNote, requestRelease, saveWorking } from '../lib/notes.ts';
-import { deadlineLabel, editBlock, relativeTime, sessionLock } from '../lib/rules.ts';
+import { autoVersionNow, deadlineLabel, editBlock, PEN_IDLE_MS, relativeTime, sessionLock } from '../lib/rules.ts';
 import { reload, sync, useApp } from '../lib/store.ts';
 import { createEngine, headerFor, type Engine, type ImageObject, type NotebookDoc, type Stroke, type TableObject } from '../notebook/engine.ts';
 import ToolPalette, { INK_COLORS, INK_SIZES, type InsertKind, type PaletteState } from '../notebook/ToolPalette.tsx';
@@ -50,8 +50,9 @@ const AUTO_VERSION_MS = 5 * 60_000;
  * 손을 멈추고 IDLE_SAVE_MS 가 지나면 저장하고, 펜이 닿아 있는 동안은 절대 저장하지 않는다.
  * 쉬지 않고 오래 쓰는 경우를 위해, 저장 안 한 지 MAX_UNSAVED_MS 가 넘으면 잠깐 멈춘 틈(SHORT_IDLE_MS)에 저장한다.
  * 앱을 내리거나 노트를 나갈 때·버전을 만들 때는 바로 저장한다.
+ * 5분 자동 버전도 쓰는 도중이면 손을 멈춘 틈(이 저장 자리)으로 미룬다.
  */
-const IDLE_SAVE_MS = 4000;
+const IDLE_SAVE_MS = PEN_IDLE_MS;
 const SHORT_IDLE_MS = 1500;
 const MAX_UNSAVED_MS = 60_000;
 const TOUCH_PREF = 'goono-note.touch-draws';
@@ -100,6 +101,9 @@ export default function Note({ id, onBack, onOpen, onRelogin }: { id: string; on
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dirtyRef = useRef(false);
   const dirtySince = useRef(0);
+  const lastEditAt = useRef(0);
+  const autoVersionDue = useRef(false);
+  const autoVersionRef = useRef<() => Promise<void>>(async () => {});
   const readOnlyRef = useRef(readOnly);
   readOnlyRef.current = readOnly;
 
@@ -154,13 +158,18 @@ export default function Note({ id, onBack, onOpen, onRelogin }: { id: string; on
   const scheduleSave = useCallback(() => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
     const overdue = Date.now() - dirtySince.current > MAX_UNSAVED_MS;
-    saveTimer.current = setTimeout(() => {
+    const onPause = () => {
       saveTimer.current = null;
-      if (!dirtyRef.current) return;
+      if (!dirtyRef.current && !autoVersionDue.current) return;
       // 펜이 닿아 있으면(획을 긋는 중) 다음 틈으로 미룬다
       if (engineRef.current?.drawing) { scheduleSaveRef.current(); return; }
-      void persist();
-    }, overdue ? SHORT_IDLE_MS : IDLE_SAVE_MS);
+      // 미뤄 둔 자동 버전(저장 포함)은 손을 충분히 멈췄을 때만 — 짧은 틈(오래 쉬지 않고 쓸 때)엔 가벼운 저장만 하고,
+      // 손을 계속 멈추고 있으면 충분히 멈춘 시점에 다시 본다
+      if (autoVersionDue.current && autoVersionNow({ drawing: false, lastEditAt: lastEditAt.current, now: Date.now() })) { void autoVersionRef.current(); return; }
+      if (dirtyRef.current) void persist();
+      if (autoVersionDue.current) saveTimer.current = setTimeout(onPause, Math.max(0, lastEditAt.current + IDLE_SAVE_MS - Date.now()));
+    };
+    saveTimer.current = setTimeout(onPause, overdue ? SHORT_IDLE_MS : IDLE_SAVE_MS);
   }, [persist]);
   const scheduleSaveRef = useRef(scheduleSave);
   scheduleSaveRef.current = scheduleSave;
@@ -175,6 +184,7 @@ export default function Note({ id, onBack, onOpen, onRelogin }: { id: string; on
         setHistory((h) => (h.undo === undo && h.redo === redo ? h : { undo, redo }));
         setEmpty(engine.strokes.length === 0);
         if (!userEdit || readOnlyRef.current) return;
+        lastEditAt.current = Date.now();
         if (!dirtyRef.current) {
           dirtyRef.current = true;
           dirtySince.current = Date.now();
@@ -273,14 +283,19 @@ export default function Note({ id, onBack, onOpen, onRelogin }: { id: string; on
   useEffect(() => { if (loaded) engineRef.current?.fitWidth(); }, [loaded, orientation]);
 
   const autoVersion = useCallback(async () => {
+    autoVersionDue.current = false;
     await persist(true);
     const v = await createVersion(id, true);
     if (v) { await reload(); setVersionsKey((k) => k + 1); void sync(); }
   }, [id, persist]);
+  autoVersionRef.current = autoVersion;
 
-  // 앱이 백그라운드로 갈 때·5분마다: 작업본 저장 + 자동 버전
+  // 앱이 백그라운드로 갈 때: 바로 / 5분마다: 쓰는 중이면 손을 멈출 때까지 미뤄서 작업본 저장 + 자동 버전
   useEffect(() => {
-    const timer = window.setInterval(() => void autoVersion(), AUTO_VERSION_MS);
+    const timer = window.setInterval(() => {
+      if (autoVersionNow({ drawing: !!engineRef.current?.drawing, lastEditAt: lastEditAt.current, now: Date.now() })) void autoVersion();
+      else { autoVersionDue.current = true; scheduleSaveRef.current(); }
+    }, AUTO_VERSION_MS);
     const onHidden = () => { if (document.visibilityState === 'hidden') void autoVersion(); };
     document.addEventListener('visibilitychange', onHidden);
     const sub = CapApp.addListener('pause', () => void autoVersion());

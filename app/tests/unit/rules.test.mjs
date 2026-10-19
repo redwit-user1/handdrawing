@@ -96,3 +96,12 @@ test('노트 만들기·반납 실패 중 동기화를 멈추는 것', () => {
     assert.equal(stopsSync(s, c), false, `${s} ${c}`);
   }
 });
+
+test('autoVersionNow: waits while the pen is down or right after a stroke', async () => {
+  const { autoVersionNow } = await import('../../src/lib/rules.ts');
+  const t = 1_000_000;
+  assert.equal(autoVersionNow({ drawing: true, lastEditAt: t - 60_000, now: t }), false);
+  assert.equal(autoVersionNow({ drawing: false, lastEditAt: t - 1_000, now: t }), false);
+  assert.equal(autoVersionNow({ drawing: false, lastEditAt: t - 4_000, now: t }), true);
+  assert.equal(autoVersionNow({ drawing: false, lastEditAt: 0, now: t }), true);
+});

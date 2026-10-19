@@ -8,6 +8,14 @@ import type { LocalNote, ServerNote, Session } from './types.ts';
 /** 시계를 이만큼 넘게 되돌리면 되돌린 것으로 본다 (시간대 변경·NTP 보정 여유) */
 export const CLOCK_ROLLBACK_TOLERANCE_MS = 10 * 60_000;
 
+/** 손을 이만큼 멈춰야 작업본 저장·자동 버전(페이지 그림 렌더)을 한다 */
+export const PEN_IDLE_MS = 4000;
+
+/** 5분 자동 버전은 페이지를 그림으로 다시 그려 무겁다 — 펜이 닿아 있거나 막 쓴 직후면 손을 멈출 때까지 미룬다 */
+export function autoVersionNow(o: { drawing: boolean; lastEditAt: number; now: number }): boolean {
+  return !o.drawing && o.now - o.lastEditAt >= PEN_IDLE_MS;
+}
+
 export type SessionLock = 'REVOKED' | 'NEEDS_LOGIN' | 'OFFLINE_EXPIRED' | 'CLOCK_ROLLBACK';
 
 export function sessionLock(s: Session, now: number): SessionLock | null {
