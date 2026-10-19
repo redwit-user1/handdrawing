@@ -45,6 +45,22 @@ const CODE_LENGTH = 8;
 const PAIRING_TTL_MS = 5 * 60_000;
 const FAIL_LIMIT = 5; // 같은 IP에서
 const FAIL_WINDOW_MS = 10 * 60_000; // 10분 안에
+const PREV_TOKEN_GRACE_MS = 10 * 60_000; // 토큰 갱신 뒤 이전 토큰을 받아 주는 시간(계약 §2)
+const MAX_TITLE_LENGTH = 256; // 노트 제목(글자 수)
+const MAX_UPLOAD_BYTES = MAX_IMAGE_BYTES; // 버전 1건 전체(meta + noteContent + 이미지) 상한 — 서버 app.device.max-upload-bytes
+const REF_PATTERN = /^[A-Za-z0-9-]{16,64}$/;
+/** 서버 DDL(PL_APP_DEVICE) 길이: [필드, 필수, 최대 길이] */
+const DEVICE_RULES = [['id', true, 64], ['name', true, 100], ['platform', true, 20], ['model', false, 100], ['appVersion', false, 30]];
+const validDevice = (d) => !!d && typeof d === 'object' && DEVICE_RULES.every(([k, required, max]) => {
+  const v = d[k];
+  if (v === undefined || v === null) return !required;
+  return typeof v === 'string' && v.length <= max && (!required || v.trim() !== '');
+});
+/** 서버와 같은 제목 다듬기: 앞뒤 공백 제거, 비면 "제목 없음", 256자(코드 포인트)에서 자름 */
+const normalizeTitle = (t) => {
+  const s = typeof t === 'string' ? t.trim() : '';
+  return s ? [...s].slice(0, MAX_TITLE_LENGTH).join('') : '제목 없음';
+};
 const normalizeCode = (s) => String(s ?? '').toUpperCase().replace(/[-\s]/g, '');
 const displayCode = (norm) => `${norm.slice(0, 4)}-${norm.slice(4)}`;
 const deviceKey = (deviceId, userMno) => `${deviceId}:${userMno}`;
@@ -71,12 +87,23 @@ reset();
 const now = () => new Date();
 const iso = (d) => d.toISOString();
 const sha256hex = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
-const err = (res, status, code, message, extra = {}) => res.status(status).json({ error: { code, message }, ...extra });
+const err = (res, status, code, message) => res.status(status).json({ error: { code, message } });
 const userView = (u) => ({ userMno: u.userMno, loginId: u.loginId, name: u.name });
 
-function issueToken(device) {
+/**
+ * 새 토큰 발급. presentedHash 는 갱신(/devices/refresh)일 때 요청이 보낸 토큰의 해시 — 현재 토큰이면 그것을 10분 동안 이전 토큰으로
+ * 남기고, 유예 중인 이전 토큰이면(응답을 못 받은 재시도) 이전 토큰·유예 기한은 그대로 둔다. 연결(pair·register)은 이전 토큰을 지운다.
+ */
+function issueToken(device, presentedHash) {
   const token = crypto.randomBytes(24).toString('base64url');
   const ttl = config.tokenTtlMs ?? config.offlineGraceDays * 86400_000;
+  if (presentedHash === undefined) {
+    device.prevTokenHash = null;
+    device.prevValidUntil = null;
+  } else if (presentedHash === device.tokenHash) {
+    device.prevTokenHash = presentedHash;
+    device.prevValidUntil = new Date(Date.now() + PREV_TOKEN_GRACE_MS);
+  }
   device.tokenHash = sha256hex(token);
   device.tokenExpiresAt = new Date(Date.now() + ttl);
   return { token, tokenExpiresAt: iso(device.tokenExpiresAt), offlineGraceDays: config.offlineGraceDays, serverTime: iso(now()) };
@@ -96,12 +123,18 @@ function auth(req, res, next) {
   const m = /^Bearer (.+)$/.exec(req.get('authorization') || '');
   if (!m) return err(res, 401, 'UNAUTHORIZED', '기기 토큰이 필요합니다.');
   const hash = sha256hex(m[1]);
-  const device = [...state.devices.values()].find((d) => d.tokenHash === hash);
+  const devices = [...state.devices.values()];
+  // 현재 토큰, 없으면 이전 토큰(갱신 재시도 유예 — 사용 중지된 기기는 유예와 관계없이 찾아 DEVICE_REVOKED 로 알린다)
+  const current = devices.find((d) => d.tokenHash === hash);
+  const prev = current ? null : devices.find((d) => d.prevTokenHash === hash);
+  const device = current || (prev && (prev.revoked || (prev.prevValidUntil && prev.prevValidUntil > now())) ? prev : null);
   if (!device) return err(res, 401, 'UNAUTHORIZED', '알 수 없는 토큰입니다.');
   if (device.revoked) return err(res, 401, 'DEVICE_REVOKED', '이 기기는 사용이 중지되었습니다.');
   if (device.tokenExpiresAt < now()) return err(res, 401, 'TOKEN_EXPIRED', '다시 연결하세요.');
+  if (current && device.prevTokenHash) { device.prevTokenHash = null; device.prevValidUntil = null; } // 새 토큰의 첫 요청
   device.lastSeenAt = now();
   req.device = device;
+  req.tokenHash = hash;
   req.user = USERS.find((u) => u.userMno === device.userMno);
   next();
 }
@@ -159,12 +192,13 @@ function rateLimited(req, res) {
   return true;
 }
 const failed = (req, res) => { state.pairFailures.get(clientIp(req)).push(Date.now()); return res; };
+// 성공해도 실패 횟수는 지우지 않는다(pair·register 모두 — 계약 §0.2). 실패는 10분 창에서 저절로 빠진다.
 
 // 보조 경로 — 서버 설정(app.device.password-login.enabled)이 켜졌을 때만
 api.post('/devices/register', (req, res) => {
   if (config.passwordLogin === false) return err(res, 403, 'PASSWORD_LOGIN_DISABLED', '비밀번호 로그인은 사용할 수 없습니다. QR로 연결하세요.');
   const { loginId, password, device } = req.body || {};
-  if (!device?.id) return err(res, 400, 'BAD_REQUEST', 'device.id가 필요합니다.');
+  if (!loginId || !password || !validDevice(device)) return err(res, 400, 'BAD_REQUEST', 'loginId, password, device 가 필요합니다.');
   if (rateLimited(req, res)) return;
   const user = USERS.find((u) => u.loginId === loginId && u.password === password);
   if (!user) return failed(req, err(res, 401, 'INVALID_CREDENTIALS', '아이디 또는 비밀번호가 올바르지 않습니다.'));
@@ -176,7 +210,7 @@ api.post('/devices/register', (req, res) => {
 // QR 연결 — 익명. 웹에서 발급한 일회용 코드로 기기 토큰을 받는다.
 api.post('/devices/pair', (req, res) => {
   const { pairingCode, device } = req.body || {};
-  if (!device?.id) return err(res, 400, 'BAD_REQUEST', 'device.id가 필요합니다.');
+  if (!validDevice(device)) return err(res, 400, 'BAD_REQUEST', '기기 정보(device)가 올바르지 않습니다.');
   if (rateLimited(req, res)) return;
   const rec = state.pairingCodes.get(normalizeCode(pairingCode));
   if (!rec || rec.usedAt || rec.invalidatedAt || rec.expiresAt <= now()) {
@@ -189,7 +223,7 @@ api.post('/devices/pair', (req, res) => {
   res.json({ ...issueToken(d), user: userView(user) });
 });
 
-api.post('/devices/refresh', auth, (req, res) => res.json(issueToken(req.device)));
+api.post('/devices/refresh', auth, (req, res) => res.json(issueToken(req.device, req.tokenHash)));
 
 api.get('/bootstrap', auth, (req, res) => res.json({
   user: userView(req.user),
@@ -205,15 +239,19 @@ api.get('/notes', auth, (req, res) => {
 });
 
 api.post('/notes', auth, (req, res) => {
-  const { clientNoteId, projectMno, title, deviceCreatedAt } = req.body || {};
-  if (!clientNoteId || !title) return err(res, 400, 'BAD_REQUEST', 'clientNoteId와 title이 필요합니다.');
-  const existing = [...state.notes.values()].find((n) => n.clientNoteId === clientNoteId);
+  const { clientNoteId, projectMno, title } = req.body || {}; // deviceCreatedAt 은 받기만 하고 저장하지 않는다(서버와 같음)
+  if (typeof clientNoteId !== 'string' || !clientNoteId.trim() || clientNoteId.length > 64 || projectMno == null) {
+    return err(res, 400, 'BAD_REQUEST', 'clientNoteId(64자 이하)와 projectMno 가 필요합니다.');
+  }
+  // 멱등은 노트 주인 단위 — 다른 사용자의 같은 clientNoteId 와는 겹쳐도 된다
+  const existing = [...state.notes.values()].find((n) => n.ownerMno === req.user.userMno && n.clientNoteId === clientNoteId);
   if (existing) return res.status(200).json(noteView(existing));
   const project = PROJECTS.find((p) => p.projectMno === projectMno);
   if (!project || !project.writable) return err(res, 403, 'PROJECT_NOT_WRITABLE', '이 프로젝트에는 노트를 만들 수 없습니다.');
-  const note = { noteMno: ++state.seq.note, clientNoteId, projectMno, title, ownerMno: req.user.userMno,
+  const note = { noteMno: ++state.seq.note, clientNoteId, projectMno, title: normalizeTitle(title), ownerMno: req.user.userMno,
     status: 'WRITING', editLocation: { type: 'DEVICE', deviceId: req.device.deviceId },
-    createdByDevice: req.device.deviceId, deviceCreatedAt, createdAt: now(), updatedAt: now(), latestVersionId: null, versionIds: [], history: [] };
+    createdByDevice: req.device.deviceId, createdAt: now(), updatedAt: now(), latestVersionId: null, versionIds: [], history: [],
+    imageHashes: {} };
   state.notes.set(note.noteMno, note);
   res.status(201).json(noteView(note));
 });
@@ -222,34 +260,49 @@ api.post('/notes/:noteMno/versions', auth, upload.any(), (req, res) => {
   const note = state.notes.get(Number(req.params.noteMno));
   // 남의 노트는 있는지도 알려 주지 않는다(404). 409 NOT_EDIT_OWNER 는 내 노트인데 편집 위치가 이 묶음이 아닐 때
   if (!note || note.ownerMno !== req.user.userMno) return err(res, 404, 'NOT_FOUND', '노트가 없습니다.');
+  // 평가 순서는 서버와 같다(계약 §6). 409 본문은 { error } 뿐.
   let meta;
-  try { meta = JSON.parse(req.body.meta || '{}'); } catch { return err(res, 400, 'BAD_REQUEST', 'meta JSON 오류'); }
-  const noteContent = String(req.body.noteContent ?? '');
-  if (!meta.clientVersionId) return err(res, 400, 'BAD_REQUEST', 'clientVersionId가 필요합니다.');
+  try { meta = JSON.parse(req.body.meta ?? ''); } catch { return err(res, 400, 'BAD_REQUEST', 'meta 가 JSON 이 아닙니다.'); }
+  if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return err(res, 400, 'BAD_REQUEST', 'meta 가 JSON 객체가 아닙니다.');
+  if (typeof meta.clientVersionId !== 'string' || !meta.clientVersionId.trim() || meta.clientVersionId.length > 64) {
+    return err(res, 400, 'BAD_REQUEST', 'clientVersionId(64자 이하)가 필요합니다.');
+  }
+  if (meta.baseVersionId != null && !Number.isInteger(meta.baseVersionId)) return err(res, 400, 'BAD_REQUEST', 'baseVersionId 는 정수이거나 null 이어야 합니다.');
+  if (typeof meta.contentHash !== 'string' || !meta.contentHash.trim()) return err(res, 400, 'BAD_REQUEST', 'contentHash 가 필요합니다.');
+  if (req.body.noteContent === undefined) return err(res, 400, 'BAD_REQUEST', 'noteContent 가 필요합니다.');
+  const noteContent = String(req.body.noteContent);
 
   const dup = state.clientVersions.get(meta.clientVersionId);
   if (dup) {
     const v = state.versions.get(dup);
+    if (v.noteMno !== note.noteMno) return err(res, 400, 'BAD_REQUEST', 'clientVersionId 가 다른 노트의 버전에 이미 쓰였습니다.');
+    if (v.contentHash.toLowerCase() !== meta.contentHash.toLowerCase()) return err(res, 400, 'INVALID_REQUEST', '같은 clientVersionId 로 다른 내용을 보냈습니다.');
     return res.status(200).json({ versionId: v.versionId, receivedAt: iso(v.receivedAt), duplicate: true });
   }
-  if (!ownsNote(req, note)) {
-    return err(res, 409, 'NOT_EDIT_OWNER', '이 기기에 편집권이 없습니다.', { status: note.status, editLocation: note.editLocation });
-  }
-  if (note.status !== 'WRITING' && note.status !== 'REJECT') {
-    return err(res, 409, 'NOT_WRITABLE', '점검 요청 이후에는 수정할 수 없습니다.', { status: note.status, editLocation: note.editLocation });
-  }
-  if ((meta.baseVersionId ?? null) !== note.latestVersionId) {
-    return err(res, 409, 'STALE_BASE', '서버 최신 버전과 다릅니다.', { latestVersionId: note.latestVersionId });
-  }
+  if (!ownsNote(req, note)) return err(res, 409, 'NOT_EDIT_OWNER', '이 기기에 편집권이 없습니다.');
+  if (note.status !== 'WRITING' && note.status !== 'REJECT') return err(res, 409, 'NOT_WRITABLE', '점검 요청 이후에는 수정할 수 없습니다.');
+  if ((meta.baseVersionId ?? null) !== note.latestVersionId) return err(res, 409, 'STALE_BASE', '서버 최신 버전과 다릅니다.');
+
+  const totalBytes = Buffer.byteLength(req.body.meta, 'utf8') + Buffer.byteLength(noteContent, 'utf8')
+    + (req.files || []).reduce((sum, f) => sum + f.size, 0);
+  if (totalBytes > MAX_UPLOAD_BYTES) return err(res, 413, 'TOO_LARGE', `업로드 크기 제한(${MAX_UPLOAD_BYTES} 바이트)을 넘었습니다.`);
 
   const images = (req.files || []).map((f) => {
     const m = /^inlineImages\[(.+)\]$/.exec(f.fieldname);
     const src = m ? m[1] : '';
-    return { src, ref: src.startsWith(BLOB_PREFIX) ? src.slice(BLOB_PREFIX.length) : src, buffer: f.buffer, mimetype: f.mimetype, originalname: f.originalname };
+    return { src, ref: src.startsWith(BLOB_PREFIX) ? src.slice(BLOB_PREFIX.length) : null, buffer: f.buffer, mimetype: f.mimetype, originalname: f.originalname };
   });
-  if (meta.contentHash !== contentHash(noteContent, images)) {
+  if (images.some((img) => img.ref == null || !REF_PATTERN.test(img.ref))) {
+    return err(res, 400, 'INVALID_REQUEST', '이미지 필드는 inlineImages[blob:goono-app/{ref}] 이고 ref 는 [A-Za-z0-9-] 16~64자여야 합니다.');
+  }
+  if (meta.contentHash.toLowerCase() !== contentHash(noteContent, images)) {
     return err(res, 422, 'HASH_MISMATCH', '전송 중 내용이 손상되었습니다.');
   }
+  // 이 노트에 같은 ref 로 다른 이미지가 이미 있으면 거부(앞 버전의 이미지를 덮어쓰지 않는다)
+  if (images.some((img) => note.imageHashes[img.ref] && note.imageHashes[img.ref] !== sha256hex(img.buffer))) {
+    return err(res, 400, 'INVALID_REQUEST', '이 노트에 같은 ref 의 다른 이미지가 이미 있습니다. 이미지 ref 는 내용마다 달라야 합니다.');
+  }
+  for (const img of images) note.imageHashes[img.ref] = sha256hex(img.buffer);
 
   // ElnNoteEditorService.createNoteEditorDtl과 같은 규칙: blob: 이미지를 파일로 저장하고 경로 치환
   let html = noteContent;
@@ -267,7 +320,7 @@ api.post('/notes/:noteMno/versions', auth, upload.any(), (req, res) => {
   state.clientVersions.set(v.clientVersionId, v.versionId);
   note.versionIds.push(v.versionId);
   note.latestVersionId = v.versionId;
-  if (typeof meta.title === 'string' && meta.title.trim()) note.title = meta.title.trim().slice(0, 200);
+  if (typeof meta.title === 'string' && meta.title.trim()) note.title = normalizeTitle(meta.title);
   note.updatedAt = now();
   res.status(201).json({ versionId: v.versionId, receivedAt: iso(v.receivedAt) });
 });
@@ -275,12 +328,11 @@ api.post('/notes/:noteMno/versions', auth, upload.any(), (req, res) => {
 api.post('/notes/:noteMno/release', auth, (req, res) => {
   const note = state.notes.get(Number(req.params.noteMno));
   if (!note || note.ownerMno !== req.user.userMno) return err(res, 404, 'NOT_FOUND', '노트가 없습니다.');
-  if (!ownsNote(req, note)) {
-    return err(res, 409, 'NOT_EDIT_OWNER', '이 기기에 편집권이 없습니다.', { status: note.status, editLocation: note.editLocation });
+  if (!req.body || typeof req.body !== 'object' || (req.body.lastVersionId != null && !Number.isInteger(req.body.lastVersionId))) {
+    return err(res, 400, 'BAD_REQUEST', '요청 본문 { lastVersionId } 가 필요합니다.');
   }
-  if ((req.body?.lastVersionId ?? null) !== note.latestVersionId) {
-    return err(res, 409, 'VERSION_MISMATCH', '아직 올라가지 않은 버전이 있습니다.', { latestVersionId: note.latestVersionId });
-  }
+  if (!ownsNote(req, note)) return err(res, 409, 'NOT_EDIT_OWNER', '이 기기에 편집권이 없습니다.');
+  if ((req.body.lastVersionId ?? null) !== note.latestVersionId) return err(res, 409, 'VERSION_MISMATCH', '아직 올라가지 않은 버전이 있습니다.');
   note.editLocation = { type: 'WEB' };
   note.history.push({ at: now(), event: 'RELEASED', by: req.device.deviceId });
   note.updatedAt = now();
@@ -293,7 +345,7 @@ app.use('/api/app/v1', api);
 const admin = express.Router();
 admin.get('/state', (_req, res) => res.json({
   config,
-  devices: [...state.devices.values()].map(({ tokenHash, ...d }) => d),
+  devices: [...state.devices.values()].map(({ tokenHash, prevTokenHash, ...d }) => d),
   pairingCodes: [...state.pairingCodes.values()].map((c) => ({ code: c.code, userMno: c.userMno, createdAt: iso(c.createdAt),
     expiresAt: iso(c.expiresAt), usedAt: c.usedAt ? iso(c.usedAt) : null, invalidatedAt: c.invalidatedAt ? iso(c.invalidatedAt) : null })),
   notes: [...state.notes.values()].map((n) => ({ ...noteView(n), versionIds: n.versionIds, history: n.history })),
@@ -329,7 +381,9 @@ admin.post('/pairing-code', (req, res) => {
   state.pairingCodes.set(code, { code, userMno: user.userMno, createdAt: now(), expiresAt, usedAt: null, invalidatedAt: null });
   const server = process.env.PUBLIC_URL || `${req.protocol}://${req.get('host')}`;
   const qrPayload = `goono-note://pair?server=${encodeURIComponent(server)}&code=${encodeURIComponent(displayCode(code))}`;
-  res.json({ code: displayCode(code), qrPayload, expiresAt: iso(expiresAt) });
+  // 실제 웹 API 와 같은 필드(appEnabled·expiresInSeconds 포함). 테스트용이라 기능이 꺼져 있어도 코드는 만든다(실제 웹은 { appEnabled: false } 만)
+  res.json({ appEnabled: config.appEnabled !== false, code: displayCode(code), qrPayload, expiresAt: iso(expiresAt),
+    expiresInSeconds: Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000)) });
 });
 admin.post('/notes/:noteMno/reclaim', (req, res) => {
   const note = state.notes.get(Number(req.params.noteMno));
@@ -352,7 +406,7 @@ admin.post('/devices/:deviceId/revoke', (req, res) => {
   const found = [...state.devices.values()].filter((d) => d.deviceId === req.params.deviceId
     && (req.body?.userMno === undefined || d.userMno === req.body.userMno));
   if (!found.length) return err(res, 404, 'NOT_FOUND', '기기가 없습니다.');
-  for (const d of found) d.revoked = true;
+  for (const d of found) { d.revoked = true; d.prevValidUntil = null; } // 갱신 유예도 끝낸다(이전 토큰은 DEVICE_REVOKED)
   res.json({ ok: true });
 });
 app.use('/__admin', admin);
