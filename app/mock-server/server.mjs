@@ -62,7 +62,7 @@ function reset() {
     devices: new Map(), // key: `${deviceId}:${userMno}`
     notes: new Map(), versions: new Map(), clientVersions: new Map(), seq: { note: 100, version: 5000 },
     pairingCodes: new Map(), // key: 정규화된 코드
-    pairFailures: new Map(), // key: IP → 실패 시각(ms) 목록
+    pairFailures: new Map(), // key: IP → 실패 시각(ms) 목록 (pair·register 공유)
   };
 }
 reset();
@@ -144,40 +144,42 @@ api.use((_req, res, next) => (config.appEnabled === false
   ? err(res, 403, 'APP_DISABLED', '이 기관은 태블릿 연결을 사용하지 않습니다.')
   : next()));
 
+// 연결 실패 제한 — /devices/pair 와 /devices/register 가 IP별 실패 횟수를 공유한다(5회/10분)
+const clientIp = (req) => req.ip || req.socket.remoteAddress || 'unknown';
+/** 막혀 있으면 429 + Retry-After(풀릴 때까지 남은 초)를 보내고 true */
+function rateLimited(req, res) {
+  const ip = clientIp(req);
+  const cutoff = Date.now() - FAIL_WINDOW_MS;
+  const fails = (state.pairFailures.get(ip) || []).filter((t) => t > cutoff);
+  state.pairFailures.set(ip, fails);
+  if (fails.length < FAIL_LIMIT) return false;
+  res.set('Retry-After', String(Math.max(1, Math.ceil((fails[0] + FAIL_WINDOW_MS - Date.now()) / 1000))));
+  err(res, 429, 'TOO_MANY_ATTEMPTS', '시도가 너무 많습니다. 잠시 후 다시 시도하세요.');
+  return true;
+}
+const failed = (req, res) => { state.pairFailures.get(clientIp(req)).push(Date.now()); return res; };
+
 // 보조 경로 — 서버 설정(app.device.password-login.enabled)이 켜졌을 때만
 api.post('/devices/register', (req, res) => {
   if (config.passwordLogin === false) return err(res, 403, 'PASSWORD_LOGIN_DISABLED', '비밀번호 로그인은 사용할 수 없습니다. QR로 연결하세요.');
   const { loginId, password, device } = req.body || {};
-  const user = USERS.find((u) => u.loginId === loginId && u.password === password);
-  if (!user) return err(res, 401, 'INVALID_CREDENTIALS', '아이디 또는 비밀번호가 올바르지 않습니다.');
   if (!device?.id) return err(res, 400, 'BAD_REQUEST', 'device.id가 필요합니다.');
+  if (rateLimited(req, res)) return;
+  const user = USERS.find((u) => u.loginId === loginId && u.password === password);
+  if (!user) return failed(req, err(res, 401, 'INVALID_CREDENTIALS', '아이디 또는 비밀번호가 올바르지 않습니다.'));
   if ((config.blockedDeviceIds || []).includes(device.id)) return err(res, 403, 'DEVICE_NOT_ALLOWED', '이 기기는 연결할 수 없습니다.');
   const d = bindDevice(device, user);
   res.json({ ...issueToken(d), user: userView(user) });
 });
 
-/** 같은 IP에서 10분 안에 5번 실패하면 막는다. 막혀 있으면 풀릴 때까지 남은 초, 아니면 0 */
-function pairRetryAfter(ip) {
-  const cutoff = Date.now() - FAIL_WINDOW_MS;
-  const fails = (state.pairFailures.get(ip) || []).filter((t) => t > cutoff);
-  state.pairFailures.set(ip, fails);
-  return fails.length >= FAIL_LIMIT ? Math.max(1, Math.ceil((fails[0] + FAIL_WINDOW_MS - Date.now()) / 1000)) : 0;
-}
-
 // QR 연결 — 익명. 웹에서 발급한 일회용 코드로 기기 토큰을 받는다.
 api.post('/devices/pair', (req, res) => {
   const { pairingCode, device } = req.body || {};
   if (!device?.id) return err(res, 400, 'BAD_REQUEST', 'device.id가 필요합니다.');
-  const ip = req.ip || req.socket.remoteAddress || 'unknown';
-  const retryAfter = pairRetryAfter(ip);
-  if (retryAfter) {
-    res.set('Retry-After', String(retryAfter));
-    return err(res, 429, 'TOO_MANY_ATTEMPTS', '시도가 너무 많습니다. 잠시 후 다시 시도하세요.');
-  }
+  if (rateLimited(req, res)) return;
   const rec = state.pairingCodes.get(normalizeCode(pairingCode));
   if (!rec || rec.usedAt || rec.invalidatedAt || rec.expiresAt <= now()) {
-    state.pairFailures.get(ip).push(Date.now());
-    return err(res, 401, 'INVALID_PAIRING_CODE', '코드가 맞지 않거나 만료되었습니다. 새 QR을 띄워 주세요.');
+    return failed(req, err(res, 401, 'INVALID_PAIRING_CODE', '코드가 맞지 않거나 만료되었습니다. 새 QR을 띄워 주세요.'));
   }
   if ((config.blockedDeviceIds || []).includes(device.id)) return err(res, 403, 'DEVICE_NOT_ALLOWED', '이 기기는 연결할 수 없습니다.');
   const user = USERS.find((u) => u.userMno === rec.userMno);
