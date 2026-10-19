@@ -9,6 +9,7 @@ Capacitor 8 + React 19 + TypeScript.
 
 | 화면 | 내용 |
 |---|---|
+| 연결 | **QR로 연결** — 구노 웹(내 설정 ▸ 태블릿 연결)에서 띄운 QR을 카메라로 읽거나(네이티브), QR 아래 8자 코드를 **코드 직접 입력**(대소문자·하이픈 무관). QR은 확인 단계("이 서버에 연결할까요?" + 서버 호스트)를 거친다. 비밀번호 화면은 개발·체험 빌드에서만 보조 링크로 |
 | 노트 선반 | 첫 페이지 썸네일, 프로젝트·수정 시각·상태(작성 중/올릴 버전/미반영/점검 중) |
 | 새 노트 | 프로젝트 하나면 바로, 여럿이면 고르고 "쓰기 시작". 제목은 날짜로 채우고 나중에 고친다(첫 획 전에 키보드 없음) |
 | 필기 | 펜·형광펜·지우개·올가미·글상자·도형 · 색/굵기 · 실행 취소 · 손가락 쓰기. 페이지 머리글에 제목·날짜·쪽 |
@@ -32,8 +33,9 @@ Capacitor 8 + React 19 + TypeScript.
 | 점검 차단 | 편집 위치가 기기인 노트는 웹에서 점검 요청 불가(누락 방지) |
 | 미반영 기록 | 서버가 받지 않은 버전(편집권 회수·점검 이후 등)은 지우지 않고 보관. "새 노트로 복원" 가능 |
 | 오프라인 기한 | 기기 토큰 만료 시각 = 오프라인 작성 기한(기본 14일, 서버 정책). 지나면 편집 잠금, 기록은 보존. 시계를 되돌리면 잠금 |
-| 재로그인 | 토큰 만료 후 연결되면 재로그인 요구. 같은 계정이면 기기 데이터를 이어 쓰고 대기 기록을 올림 |
-| 기기 폐기 | 서버에서 기기를 사용 중지하면 편집 잠금 |
+| 연결 | 구노 웹에서 발급한 **일회용 연결 코드**(8자, 5분, QR 내용 `goono-note://pair?server=…&code=XXXX-XXXX`)로 기기 토큰을 받는다(`/devices/pair`). 앱은 비밀번호를 받지 않는다. 엉뚱한 QR(다른 앱, https가 아닌 서버, 잘못된 코드)은 연결을 시도하지 않고 원인을 알린다 |
+| 다시 연결 | 토큰 만료(연결 만료)·기기 사용 중지 모두 잠금 배너의 **다시 연결** → 새 QR. 서버 주소는 고정. 같은 계정이면 기기 데이터를 이어 쓰고 대기 기록을 올림. 다른 계정이면 올리지 않은 기록이 있는 한 거부(그 코드는 이미 쓰였으므로 새 QR 필요) |
+| 기기 폐기 | 서버에서 기기를 사용 중지하면 편집 잠금(기록은 보존). 다시 연결하면 이어 쓴다 |
 | 기기 저장 | 앱 데이터 영역에 AES-GCM 256 암호화. 키는 iOS 키체인 / Android 키스토어. Android 백업·기기 이전 제외 |
 | 로그아웃 | 올리지 않은 기록이 있으면 거부. 로그아웃 시 기기 데이터 삭제 |
 
@@ -51,7 +53,7 @@ npm run dev         # http://localhost:5173 — 브라우저에서 바로 확인
 `/__admin/devices/{deviceId}/revoke`(기기 폐기), `/__admin/config {"tokenTtlMs":8000}`(오프라인 기한 단축).
 QR 연결 시험: `POST /__admin/pairing-code {"loginId":"researcher1","ttlMs":300000}` → `{code, qrPayload, expiresAt}`(웹의 "QR 띄우기" 대신.
 코드는 일회용·5분, 새로 받으면 같은 사용자의 이전 코드는 무효). 앱은 `POST /api/app/v1/devices/pair` 로 연결한다.
-`POST /__admin/config` 로 `passwordLogin`(`false`면 `/devices/register` 가 403 `PASSWORD_LOGIN_DISABLED`, 기본 `true`),
+`POST /__admin/config` 로 `passwordLogin`(기본 `false` — `/devices/register` 가 403 `PASSWORD_LOGIN_DISABLED`. 개발 빌드의 "비밀번호로 연결(개발용)"을 쓰려면 `true`),
 `appEnabled`(`false`면 모든 `/api/app/v1` 요청이 403 `APP_DISABLED`), `blockedDeviceIds`(403 `DEVICE_NOT_ALLOWED`)를 바꾼다.
 `/__admin/state` 의 `pairingCodes` 에서 발급·사용·무효 상태를 볼 수 있고, `/__admin/reset` 은 설정도 처음으로 되돌린다.
 
@@ -59,13 +61,15 @@ QR 연결 시험: `POST /__admin/pairing-code {"loginId":"researcher1","ttlMs":3
 
 ```bash
 npm test            # 단위: 편집 가능 규칙, 서버 상태 반영, 오류 분류, 이미지 변환, 내용 해시(서버 규칙과 일치)
-npm run build && npm run test:e2e   # 태블릿(iPad 11" 가로) 에뮬레이션 E2E, 15단계
+npm run build && npm run test:e2e   # 태블릿(iPad 11" 가로) 에뮬레이션 E2E, 23단계
 ```
 
-E2E 시나리오: 로그인 → **새 노트가 곧바로 펜 필기 페이지**(키보드 없음) → 오프라인에서 펜 필기 + 글상자 → 버전(기기 대기) →
+E2E 시나리오: 연결 화면 오류 안내(8자 아닌 코드·http 서버 QR은 요청 없이 거부, 기관 사용 안 함, 틀린 코드 5회 → 시도 제한) →
+**코드 직접 입력**(소문자·하이픈 없이)으로 연결 → **새 노트가 곧바로 펜 필기 페이지**(키보드 없음) → 오프라인에서 펜 필기 + 글상자 → 버전(기기 대기) →
 저장소 암호화 확인 → 오프라인 재시작 후 필기·글상자 복원 → 웹 점검 요청 거부 → 온라인 복귀 자동 동기화(웹과 같은 손글씨 블록,
 A4 본문 비율 페이지 PNG) → 제목 변경·2쪽 필기 → 작성 완료·반납(도구 사라짐) → 편집권 회수 후 미반영 보관 → 새 노트로 복원 →
-오프라인 기한 만료 잠금 → 재로그인 후 대기 버전 업로드 → 기기 폐기 잠금.
+오프라인 기한 만료 잠금 → **다시 연결**(쓴 코드·만료 코드 거부, 다른 계정 `researcher2` 코드는 올리지 않은 기록 때문에 거부) →
+새 코드로 이어 쓰기(대기 버전 업로드) → 기기 폐기 잠금 → 다시 연결로 잠금 해제·기록 유지.
 스크린숏은 `tests/e2e/out/`.
 
 ## 네이티브 빌드
@@ -89,7 +93,9 @@ npm run build && GOONO_DEV_HTTP=1 npx cap sync android
 cd android && ./gradlew assembleDebug        # http 서버 접속 허용 빌드
 npm run mock                                  # PC에서 모의 서버 (0.0.0.0:8787)
 ```
-태블릿과 PC를 같은 Wi-Fi에 두고 APK 설치 → 로그인 화면 서버 주소에 `http://<PC IP>:8787`, `researcher1 / goono1234`.
+태블릿과 PC를 같은 Wi-Fi에 두고 APK 설치 → PC에서 연결 코드 발급
+(`curl -X POST http://localhost:8787/__admin/pairing-code -H 'content-type: application/json' -d '{"loginId":"researcher1"}'`)
+→ 앱 연결 화면 **코드 직접 입력**에 코드, 서버 주소 `http://<PC IP>:8787`.
 PC 브라우저 `http://localhost:8787/` 에서 올라온 노트를 본다. 태블릿 비행기 모드로 오프라인 작성을 시험할 수 있다.
 배포용 빌드는 반드시 `GOONO_DEV_HTTP` 없이 `npx cap sync` 한다.
 
@@ -116,7 +122,7 @@ npm run ios:dev        # 체험 모드 포함 빌드 → cap sync ios → Xcode 
 2. iPad 를 케이블로 Mac 에 연결 → iPad 에서 "이 컴퓨터 신뢰".
    iPad **설정 ▸ 개인정보 보호 및 보안 ▸ 개발자 모드** 켜기(재시동).
 3. Xcode 위쪽 실행 대상에서 iPad 를 고르고 ▶(Run). 처음이면 iPad **설정 ▸ 일반 ▸ VPN 및 기기 관리**에서 개발자 앱을 신뢰.
-4. 앱이 뜨면 로그인 화면의 **서버 없이 체험하기**, 또는 https 구노 서버 주소로 로그인.
+4. 앱이 뜨면 연결 화면의 **서버 없이 체험하기**(체험 모드 포함 빌드), 또는 구노 웹에서 띄운 QR·코드로 연결.
    - 무료 Apple ID 로 설치한 앱은 7일 뒤 실행이 막힌다 → 다시 ▶. 회사 Apple Developer 계정이면 1년.
    - Mac 에서 돌리는 http 모의 서버(`npm run mock`)에 붙이려면 개발용으로만 `ios/App/App/Info.plist` 에
      `NSAppTransportSecurity ▸ NSAllowsLocalNetworking = YES` 를 넣고 서버 주소를 `http://<Mac IP>:8787` 로.
@@ -131,7 +137,7 @@ npm run ios:dev        # 체험 모드 포함 빌드 → cap sync ios → Xcode 
 - **iPad**: Apple Business Manager **Custom App**(기관 지정 비공개 배포). 앱 심사는 거치며, 고객 기관 ABM에 배정 → 기관 MDM으로 설치.
   Enterprise(In-House) 프로그램은 자사 직원용이라 고객 기관 배포에 쓸 수 없다.
 - **갤럭시 탭**: 서명한 APK/AAB를 기관 MDM(Knox Manage 등) 또는 Managed Google Play 비공개 앱으로 배포.
-- 앱 ID `kr.redwit.goono.note`. 서버 주소는 로그인 화면에서 기관별로 입력(MDM 관리형 설정으로 미리 채우는 것은 후속).
+- 앱 ID `kr.redwit.goono.note`. 서버 주소는 QR에 들어 있고, 코드 직접 입력 때는 연결 화면에서 입력(이전 서버를 기억. MDM 관리형 설정으로 미리 채우는 것은 후속).
 
 ## 실기기에서 확인할 것 (에뮬레이션으로 검증 못 한 부분)
 

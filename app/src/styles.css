@@ -395,3 +395,15 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .
 .demo-link { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); display: grid; justify-items: start; gap: 2px; }
 .login-card > .chip { display: inline-block; margin-bottom: 10px; }
 .login-card .plain-list { margin: 12px 0 4px; }
+
+/* ── 연결(QR) ── */
+.connect-steps { margin: 14px 0 4px; padding-left: 20px; color: var(--ink-2); line-height: 1.6; }
+.connect-actions { display: grid; gap: 10px; margin-top: 20px; }
+.connect-actions .btn { min-height: 52px; }
+.connect-host {
+  margin: 14px 0 6px; padding: 14px 16px; border-radius: var(--r-m); background: var(--panel-2); border: 1px solid var(--line);
+  font-size: var(--fs-l); font-weight: 700; color: var(--ink); overflow-wrap: anywhere;
+}
+.login-card .mono, .field .connect-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .06em; }
+.field .connect-code { font-size: 22px; text-transform: uppercase; }
+.field .connect-code::placeholder { text-transform: none; letter-spacing: .06em; }

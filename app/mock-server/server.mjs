@@ -8,7 +8,8 @@
  *
  * 테스트 계정: researcher1 / goono1234 (userMno 12), researcher2 / goono1234 (userMno 13)
  * 연결(QR): POST /__admin/pairing-code {loginId, ttlMs?} 로 연결 코드·QR 내용을 받고,
- *           앱은 POST /api/app/v1/devices/pair 로 연결한다. (비밀번호 /devices/register 는 보조 경로)
+ *           앱은 POST /api/app/v1/devices/pair 로 연결한다. (비밀번호 /devices/register 는 보조 경로 —
+ *           기본 꺼짐, POST /__admin/config {"passwordLogin":true} 로 켠다)
  * 확인 화면: http://localhost:8787/  (구노 웹 대신 받은 노트·버전을 보여준다)
  * 관리(테스트용): /__admin/* — 연결 코드 발급, 편집권 회수, 상태 변경, 기기 폐기, 토큰 기한 조정,
  *                 설정(passwordLogin·appEnabled·blockedDeviceIds)
@@ -51,7 +52,7 @@ const deviceKey = (deviceId, userMno) => `${deviceId}:${userMno}`;
 const defaultConfig = () => ({
   offlineGraceDays: Number(process.env.OFFLINE_GRACE_DAYS || 14),
   tokenTtlMs: null,
-  passwordLogin: true, // 서버 설정 app.device.password-login.enabled
+  passwordLogin: false, // 서버 설정 app.device.password-login.enabled — 기본 꺼짐(QR 연결만). 개발 중 비밀번호 화면을 쓰려면 /__admin/config 로 켠다
   appEnabled: true, // 기관이 태블릿 연결을 켰는가
   blockedDeviceIds: [],
 });
@@ -98,7 +99,7 @@ function auth(req, res, next) {
   const device = [...state.devices.values()].find((d) => d.tokenHash === hash);
   if (!device) return err(res, 401, 'UNAUTHORIZED', '알 수 없는 토큰입니다.');
   if (device.revoked) return err(res, 401, 'DEVICE_REVOKED', '이 기기는 사용이 중지되었습니다.');
-  if (device.tokenExpiresAt < now()) return err(res, 401, 'TOKEN_EXPIRED', '다시 로그인하세요.');
+  if (device.tokenExpiresAt < now()) return err(res, 401, 'TOKEN_EXPIRED', '다시 연결하세요.');
   device.lastSeenAt = now();
   req.device = device;
   req.user = USERS.find((u) => u.userMno === device.userMno);

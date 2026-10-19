@@ -67,7 +67,9 @@ async function connect(
 
   if (prev && (prev.user.userMno !== r.user.userMno || prev.serverUrl !== url)) {
     if (await hasUnsentWork()) {
-      throw new Error(`이 기기에 ${prev.user.name}(${prev.user.loginId}) 님의 올리지 않은 기록이 있습니다. 그 계정으로 로그인해 동기화한 뒤 로그아웃하세요.`);
+      // 서버 연결은 이미 끝나 방금 쓴 코드는 사용되었다 → 새 QR 이 필요하다고 알린다
+      throw new Error(`이 기기에 ${prev.user.name}(${prev.user.loginId}) 님의 올리지 않은 기록이 있어 다른 계정으로 연결할 수 없습니다. `
+        + '그 계정으로 다시 연결해 기록을 모두 올린 뒤 로그아웃하고, 구노 웹에서 새 QR을 띄워 연결하세요.');
     }
     await db.wipe();
   }

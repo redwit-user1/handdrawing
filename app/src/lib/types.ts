@@ -30,7 +30,7 @@ export interface Session {
   lastSyncAt?: string;
   /** 서버가 기기를 폐기함 → 편집 잠금 */
   revoked?: boolean;
-  /** 토큰 만료로 다시 로그인해야 함 */
+  /** 토큰 만료로 다시 연결해야 함 */
   needsLogin?: boolean;
   /** 기기에서 관측한 가장 늦은 시각(ms) — 시계를 되돌려 오프라인 기한을 늘리는 것을 막는다 */
   clockHighWater?: number;

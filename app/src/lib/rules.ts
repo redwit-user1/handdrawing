@@ -19,8 +19,8 @@ export function sessionLock(s: Session, now: number): SessionLock | null {
 }
 
 export const LOCK_MESSAGES: Record<SessionLock, string> = {
-  REVOKED: '이 기기는 구노에서 사용 중지되었습니다. 기기에 남은 기록은 보관되며, 관리자에게 문의하세요.',
-  NEEDS_LOGIN: '로그인이 만료되었습니다. 다시 로그인하면 작성과 동기화를 이어갈 수 있습니다.',
+  REVOKED: '이 기기는 구노에서 사용 중지되었습니다. 기기에 남은 기록은 보관됩니다. 구노 웹에서 새 QR을 띄워 다시 연결하면 이어서 쓸 수 있습니다.',
+  NEEDS_LOGIN: '연결이 만료되었습니다. 구노 웹에서 새 QR을 띄워 다시 연결하면 작성과 동기화를 이어갈 수 있습니다.',
   OFFLINE_EXPIRED: '오프라인 작성 기한이 지났습니다. 인터넷에 연결해 동기화하면 다시 작성할 수 있습니다.',
   CLOCK_ROLLBACK: '기기 시계가 과거로 바뀌었습니다. 시계를 바로잡거나 인터넷에 연결해 동기화하세요.',
 };

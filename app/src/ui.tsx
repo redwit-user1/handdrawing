@@ -55,7 +55,7 @@ export function LockBanner({ onRelogin }: { onRelogin?: () => void }) {
   return (
     <div className="banner danger" data-testid="lock-banner" data-lock={lock}>
       <IcLock /> <span className="grow">{LOCK_MESSAGES[lock]}</span>
-      {lock === 'NEEDS_LOGIN' && onRelogin && <button className="btn small" onClick={onRelogin}>다시 로그인</button>}
+      {(lock === 'NEEDS_LOGIN' || lock === 'REVOKED') && onRelogin && <button className="btn small" onClick={onRelogin} data-testid="reconnect">다시 연결</button>}
     </div>
   );
 }

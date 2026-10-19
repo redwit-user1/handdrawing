@@ -122,6 +122,28 @@ const lockOf = async () => tid('lock-banner').getAttribute('data-lock', { timeou
 const blockOf = async () => tid('block-banner').getAttribute('data-kind', { timeout: 300 }).catch(() => '');
 const paletteVisible = async () => (await tid('palette').count()) > 0;
 
+/** 구노 웹의 "QR 띄우기" 대신 — 모의 서버가 연결 코드(XXXX-XXXX)·QR 내용을 발급 */
+const issueCode = async (loginId, ttlMs) => (await admin('/pairing-code', ttlMs ? { loginId, ttlMs } : { loginId })).body;
+const codeState = async (code) => (await serverState()).pairingCodes.find((c) => c.code === code.replace('-', '')); // 서버는 하이픈 없이 저장
+/** 연결 화면 "코드 직접 입력"에 넣고 연결 → { ok, error } */
+async function submitCode(text, { request = true } = {}) {
+  await tid('connect-code').fill(text);
+  const res = request ? page.waitForResponse((r) => r.url().endsWith('/devices/pair') && r.request().method() === 'POST') : null;
+  await tid('connect-submit').click();
+  if (res) await res;
+  return until(async () => {
+    // 화면이 바뀌는 중에도 한 번에 읽는다
+    const st = await page.evaluate(() => {
+      const f = document.querySelector('[data-testid="connect-form"]');
+      if (!f) return { gone: true };
+      return { busy: f.querySelector('[data-testid="connect-submit"]').disabled, error: f.querySelector('[data-testid="connect-error"]')?.textContent ?? '' };
+    });
+    if (st.gone) return { ok: true, error: '' }; // 연결되어 화면이 바뀜
+    return !st.busy && st.error ? { ok: false, error: st.error } : null;
+  }, '연결 결과');
+}
+const INVALID_MSG = '코드가 맞지 않거나 만료되었습니다. 구노 웹에서 새 QR을 띄워 주세요.';
+
 /** 첫 페이지 안쪽 좌표 (페이지는 캔버스 가운데에 놓인다) */
 async function pagePoint(x, y) {
   const b = await tid('board').boundingBox();
@@ -191,17 +213,52 @@ const SECRET = '비밀실험값-7Q3Z';
 try {
   console.log(`E2E (앱 ${APP}, 모의 서버 ${MOCK})`);
 
-  await check('로그인(기기 등록)', async () => {
+  await check('연결 화면: 잘못된 코드·http QR은 요청 없이 거부, 기관 사용 안 함·시도 제한 안내', async () => {
     await page.goto(APP);
-    await tid('login-id').fill('researcher1');
-    await tid('login-pw').fill('goono1234');
-    await tid('login-device').fill('연구실 iPad (E2E)');
-    await tid('login-server').fill(MOCK);
-    await tid('login-submit').click();
+    await tid('connect').waitFor();
+    assert((await page.locator('[data-testid="connect"] h1').textContent()) === 'QR로 연결', '첫 화면 제목');
+    assert((await tid('connect-scan').count()) === 0, '웹에서는 QR 읽기 버튼 없음');
+    assert((await tid('connect-password').count()) === 0 && (await tid('connect-demo').count()) === 0, '운영 빌드에는 비밀번호·체험 링크 없음');
+    await shot('00-connect');
+    await tid('connect-manual').click();
+    await tid('connect-server').fill(MOCK);
+    await tid('connect-device').fill('연구실 iPad (E2E)');
+    // 8자가 아닌 코드 — 요청하지 않는다
+    let r = await submitCode('ABC', { request: false });
+    assert(/8자/.test(r.error), `코드 형식 안내 (${r.error})`);
+    // QR 내용을 붙여 넣었는데 서버가 http — 운영 빌드는 연결을 시도하지 않고 원인을 알린다
+    const issued = await issueCode('researcher1');
+    assert(/^goono-note:\/\/pair\?server=http/.test(issued.qrPayload), 'QR 내용');
+    r = await submitCode(issued.qrPayload, { request: false });
+    assert(/https가 아닙니다/.test(r.error) && !(await tid('connect-confirm').count()), `http 서버 QR 거부 (${r.error})`);
+    assert(!(await codeState(issued.code)).usedAt, '코드는 쓰이지 않음');
+    // 기관이 태블릿 연결을 끔
+    await admin('/config', { appEnabled: false });
+    r = await submitCode(issued.code);
+    assert(r.error === '이 기관은 태블릿 연결을 사용하지 않습니다. 관리자에게 문의하세요.', `APP_DISABLED 문구 (${r.error})`);
+    await admin('/config', { appEnabled: true });
+    // 틀린 코드 5번 → 6번째는 시도 제한(남은 시간 안내)
+    const wrong = issued.code === 'ZZZZ-ZZZZ' ? 'YYYY-YYYY' : 'ZZZZ-ZZZZ';
+    for (let i = 0; i < 5; i++) {
+      r = await submitCode(wrong);
+      assert(r.error === INVALID_MSG, `INVALID 문구 ${i + 1} (${r.error})`);
+    }
+    r = await submitCode(issued.code);
+    assert(/^시도가 너무 많습니다\. 잠시 후 다시 시도하세요\. \(약 \d+초 후\)$/.test(r.error), `TOO_MANY_ATTEMPTS 문구 (${r.error})`);
+    await shot('00-connect-error');
+    await admin('/reset', {});
+  });
+
+  let firstCode;
+  await check('코드 직접 입력(소문자·하이픈 없이·앞뒤 공백)으로 연결(기기 등록)', async () => {
+    firstCode = (await issueCode('researcher1')).code;
+    const r = await submitCode(`  ${firstCode.replace('-', '').toLowerCase()} `);
+    assert(r.ok, `연결 (${r.error})`);
     await tid('new-note').first().waitFor();
     await until(async () => /일 남음/.test(await tid('deadline').textContent()), '오프라인 작성 기한 표시');
     const st = await serverState();
-    assert(st.devices.length === 1 && st.devices[0].name === '연구실 iPad (E2E)', '서버에 기기 등록');
+    assert(st.devices.length === 1 && st.devices[0].name === '연구실 iPad (E2E)' && st.devices[0].userMno === 12, '서버에 기기 등록(researcher1)');
+    assert((await codeState(firstCode)).usedAt, '코드 사용됨(일회용)');
   });
 
   await check('새 노트 → 곧바로 필기 페이지(펜 선택, 키보드 없이), 서버에 노트 생성', async () => {
@@ -483,14 +540,36 @@ try {
     await shot('05-offline-expired');
   });
 
-  await check('만료 후 연결 → 재로그인 요구 → 재로그인하면 대기 버전 업로드', async () => {
+  await check('연결 만료 → "다시 연결"(서버 고정) → 이미 쓴 코드·만료된 코드는 안내만', async () => {
     await admin('/config', { tokenTtlMs: null });
     await setOffline(false);
-    await until(async () => (await lockOf()) === 'NEEDS_LOGIN', '재로그인 요구', 20_000);
-    await page.getByRole('button', { name: '다시 로그인' }).click();
-    assert(await tid('login-id').isDisabled(), '아이디 고정');
-    await tid('login-pw').fill('goono1234');
-    await tid('login-submit').click();
+    await until(async () => (await lockOf()) === 'NEEDS_LOGIN', '다시 연결 요구', 20_000);
+    await tid('reconnect').click();
+    await tid('connect').waitFor();
+    assert(/김연구\(researcher1\)/.test(await tid('connect-account').textContent()), '연결된 계정 표시');
+    await tid('connect-manual').click();
+    assert(await tid('connect-server').isDisabled() && (await tid('connect-server').inputValue()) === MOCK, '서버 주소 고정');
+    let r = await submitCode(firstCode);
+    assert(r.error === INVALID_MSG, `같은 코드 재사용 거부 (${r.error})`);
+    const expired = (await issueCode('researcher1', 1)).code;
+    await new Promise((res) => setTimeout(res, 50));
+    r = await submitCode(expired);
+    assert(r.error === INVALID_MSG, `만료된 코드 거부 (${r.error})`);
+  });
+
+  await check('다른 계정(researcher2) 코드로 다시 연결 → 올리지 않은 기록이 있어 거부, 기록은 남음', async () => {
+    const other = (await issueCode('researcher2')).code;
+    const r = await submitCode(other);
+    assert(/김연구\(researcher1\) 님의 올리지 않은 기록이 있어 다른 계정으로 연결할 수 없습니다/.test(r.error) && /새 QR/.test(r.error), `거부 문구 (${r.error})`);
+    assert(await tid('connect-form').isVisible(), '연결 화면에 머묾');
+    assert(!(await noteByTitle(C)), '다른 계정으로 아무것도 올리지 않음');
+    await shot('08-other-account-refused');
+  });
+
+  await check('새 코드(같은 계정)로 다시 연결 → 잠금 해제, 대기 버전 업로드(이어 쓰기)', async () => {
+    const code = (await issueCode('researcher1')).code;
+    const r = await submitCode(code);
+    assert(r.ok, `연결 (${r.error})`);
     await tid('palette').waitFor();
     await waitAllSent();
     const n = await until(() => noteByTitle(C), '오프라인 노트 서버 생성');
@@ -506,6 +585,29 @@ try {
     await until(async () => (await lockOf()) === 'REVOKED', '폐기 잠금');
     assert(!(await paletteVisible()), '필기 도구 숨김');
     await shot('06-revoked');
+  });
+
+  await check('폐기 후 "다시 연결" → 새 코드 → 잠금 해제·기기 기록 유지', async () => {
+    await tid('reconnect').click();
+    await tid('connect').waitFor();
+    assert(/사용 중지/.test(await tid('connect').textContent()), '사용 중지 안내');
+    await tid('connect-manual').click();
+    const code = (await issueCode('researcher1')).code;
+    const r = await submitCode(code.toLowerCase());
+    assert(r.ok, `연결 (${r.error})`);
+    await tid('palette').waitFor();
+    assert((await tid('lock-banner').count()) === 0, '잠금 해제');
+    await tid('back').click();
+    await tid('note-list').waitFor();
+    for (const t of [A2, B, `${B} (복원)`, C]) {
+      assert(await page.locator('[data-testid="note-card"]', { hasText: t }).count(), `기기 노트 유지: ${t}`);
+    }
+    await tid('sync-now').click();
+    await waitAllSent();
+    const dev = (await serverState()).devices.find((d) => d.userMno === 12);
+    assert(dev && !dev.revoked, '서버 기기 다시 사용');
+    assert(!(await tid('sync-error').count()), '동기화 오류 없음');
+    await shot('09-reconnected');
   });
 
   // 서버 응답(409·401)·오프라인 요청 실패는 시나리오상 예상되는 리소스 오류 — 스크립트 예외만 본다

@@ -56,8 +56,8 @@ async function markAuth(e: ApiError): Promise<void> {
 async function runSync(): Promise<SyncResult> {
   const result: SyncResult = { ok: false, sent: 0, rejected: 0, released: 0 };
   let session = await db.getSession();
-  if (!session) return { ...result, error: '로그인이 필요합니다.' };
-  if (session.revoked || session.needsLogin) return { ...result, error: '로그인이 필요합니다.' };
+  if (!session) return { ...result, error: '연결이 필요합니다.' };
+  if (session.revoked || session.needsLogin) return { ...result, error: '다시 연결이 필요합니다.' };
 
   try {
     const t = await api.refresh(session.serverUrl, session.token);

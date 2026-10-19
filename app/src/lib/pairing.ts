@@ -47,3 +47,34 @@ export function parsePairingUri(text: string, opts: { allowHttp?: boolean } = {}
   if (!code) return { error: 'BAD_CODE' };
   return { serverUrl: normalizeServerUrl(server), code };
 }
+
+/** 엉뚱한 QR 을 읽었을 때 — 연결을 시도하지 않고 원인을 알려 준다 */
+export const PARSE_ERROR_MESSAGES: Record<PairingError, string> = {
+  NOT_PAIRING_QR: '구노 연구노트 연결용 QR이 아닙니다. 구노 웹에서 띄운 연결 QR을 읽어 주세요.',
+  INSECURE_SERVER: 'QR의 서버 주소가 올바르지 않거나 https가 아닙니다. 구노 웹에서 띄운 연결 QR인지 확인하세요.',
+  BAD_CODE: 'QR의 연결 코드가 올바르지 않습니다. 구노 웹에서 새 QR을 띄워 주세요.',
+};
+
+/** 직접 입력한 코드가 8자·문자 집합에 맞지 않을 때 (요청을 보내지 않는다) */
+export const BAD_CODE_INPUT_MESSAGE = '연결 코드는 8자입니다(예: K7Q2-M9XD). 숫자 0·1과 영문 O·I·L은 쓰지 않습니다.';
+
+/** 연결(pair) 실패 안내 문구 — 서버 오류 코드별 (docs/SYNC-API.md §0) */
+export const PAIR_ERROR_MESSAGES: Record<string, string> = {
+  INVALID_PAIRING_CODE: '코드가 맞지 않거나 만료되었습니다. 구노 웹에서 새 QR을 띄워 주세요.',
+  APP_DISABLED: '이 기관은 태블릿 연결을 사용하지 않습니다. 관리자에게 문의하세요.',
+  DEVICE_NOT_ALLOWED: '이 기기는 연결할 수 없습니다. 관리자에게 문의하세요.',
+  TOO_MANY_ATTEMPTS: '시도가 너무 많습니다. 잠시 후 다시 시도하세요.',
+};
+export const NETWORK_ERROR_MESSAGE = '서버에 연결할 수 없습니다. 처음 연결과 다시 연결은 인터넷 연결이 필요합니다.';
+
+/**
+ * 연결 실패를 화면 문구로. ApiError(status·code·retryAfterSec)와 일반 Error(다른 계정 거부 등)를 모두 받는다.
+ * (api.ts 를 가져오지 않도록 모양만 본다 — 단위 테스트 대상)
+ */
+export function pairErrorMessage(e: { message: string; status?: number; code?: string; retryAfterSec?: number }): string {
+  if (e.status === 0) return NETWORK_ERROR_MESSAGE;
+  const known = e.code ? PAIR_ERROR_MESSAGES[e.code] : undefined;
+  if (!known) return e.message;
+  if (e.code === 'TOO_MANY_ATTEMPTS' && e.retryAfterSec) return `${known} (약 ${e.retryAfterSec}초 후)`;
+  return known;
+}

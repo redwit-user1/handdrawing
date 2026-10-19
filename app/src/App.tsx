@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { reload, start, sync, useApp } from './lib/store.ts';
-import Login from './screens/Login.tsx';
+import Connect from './screens/Connect.tsx';
 import Notes from './screens/Notes.tsx';
 import Note from './screens/Note.tsx';
 
@@ -13,9 +13,9 @@ export default function App() {
   useEffect(() => { void start(); }, []);
 
   if (!loaded) return <div className="splash">구노 연구노트</div>;
-  if (!session) return <Login onDone={() => { void reload().then(sync); setRoute({ name: 'list' }); }} />;
+  if (!session) return <Connect onDone={() => { void reload().then(sync); setRoute({ name: 'list' }); }} />;
   if (route.name === 'relogin') {
-    return <Login relogin={session} onCancel={() => setRoute(route.back)} onDone={() => { void reload().then(sync); setRoute(route.back); }} />;
+    return <Connect relogin={session} onCancel={() => setRoute(route.back)} onDone={() => { void reload().then(sync); setRoute(route.back); }} />;
   }
   const relogin = () => setRoute({ name: 'relogin', back: route });
   if (route.name === 'note') {

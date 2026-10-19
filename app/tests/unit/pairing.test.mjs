@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { CODE_ALPHABET, formatCode, normalizeCode, parsePairingUri } from '../../src/lib/pairing.ts';
+import { CODE_ALPHABET, formatCode, normalizeCode, pairErrorMessage, parsePairingUri } from '../../src/lib/pairing.ts';
 
 const uri = (server, code) =>
   `goono-note://pair?server=${encodeURIComponent(server)}&code=${encodeURIComponent(code)}`;
@@ -59,4 +59,21 @@ test('rejects missing or bad code', () => {
   assert.deepEqual(parsePairingUri('goono-note://pair?server=https%3A%2F%2Fx.com'), { error: 'BAD_CODE' });
   assert.deepEqual(parsePairingUri(uri('https://x.com', 'K7Q2-M9XDA')), { error: 'BAD_CODE' });
   assert.deepEqual(parsePairingUri(uri('https://x.com', 'K7Q2-M9X0')), { error: 'BAD_CODE' });
+});
+
+test('maps pair errors to exact copy', () => {
+  assert.equal(pairErrorMessage({ message: 'x', status: 401, code: 'INVALID_PAIRING_CODE' }),
+    '코드가 맞지 않거나 만료되었습니다. 구노 웹에서 새 QR을 띄워 주세요.');
+  assert.equal(pairErrorMessage({ message: 'x', status: 403, code: 'APP_DISABLED' }),
+    '이 기관은 태블릿 연결을 사용하지 않습니다. 관리자에게 문의하세요.');
+  assert.equal(pairErrorMessage({ message: 'x', status: 403, code: 'DEVICE_NOT_ALLOWED' }),
+    '이 기기는 연결할 수 없습니다. 관리자에게 문의하세요.');
+  assert.equal(pairErrorMessage({ message: 'x', status: 429, code: 'TOO_MANY_ATTEMPTS' }),
+    '시도가 너무 많습니다. 잠시 후 다시 시도하세요.');
+  assert.equal(pairErrorMessage({ message: 'x', status: 429, code: 'TOO_MANY_ATTEMPTS', retryAfterSec: 42 }),
+    '시도가 너무 많습니다. 잠시 후 다시 시도하세요. (약 42초 후)');
+  assert.match(pairErrorMessage({ message: 'x', status: 0, code: 'NETWORK' }), /^서버에 연결할 수 없습니다\./);
+  // 모르는 코드·일반 Error(다른 계정 거부)는 받은 문구 그대로
+  assert.equal(pairErrorMessage({ message: '서버 오류 (500)', status: 500, code: 'HTTP_500' }), '서버 오류 (500)');
+  assert.equal(pairErrorMessage(new Error('올리지 않은 기록이 있습니다')), '올리지 않은 기록이 있습니다');
 });
