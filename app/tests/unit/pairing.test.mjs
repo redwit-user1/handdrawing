@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { CODE_ALPHABET, formatCode, normalizeCode, pairErrorMessage, parsePairingUri } from '../../src/lib/pairing.ts';
+import { CODE_ALPHABET, formatCode, normalizeCode, pairErrorMessage, pairingFromUrl, parsePairingUri } from '../../src/lib/pairing.ts';
 
 const uri = (server, code) =>
   `goono-note://pair?server=${encodeURIComponent(server)}&code=${encodeURIComponent(code)}`;
@@ -76,4 +76,30 @@ test('maps pair errors to exact copy', () => {
   // 모르는 코드·일반 Error(다른 계정 거부)는 받은 문구 그대로
   assert.equal(pairErrorMessage({ message: '서버 오류 (500)', status: 500, code: 'HTTP_500' }), '서버 오류 (500)');
   assert.equal(pairErrorMessage(new Error('올리지 않은 기록이 있습니다')), '올리지 않은 기록이 있습니다');
+});
+
+// ---- 딥링크: 앱 밖에서 열린 URL ----
+
+test('ignores non-pair urls', () => {
+  for (const u of [
+    'https://example.com/pair?server=https%3A%2F%2Fx.com&code=K7Q2-M9XD',
+    'goono-note://other?server=https%3A%2F%2Fx.com&code=K7Q2-M9XD',
+    'otherapp://pair?server=https%3A%2F%2Fx.com&code=K7Q2-M9XD',
+    'not a url',
+    '',
+  ]) assert.equal(pairingFromUrl(u), null, u);
+});
+
+test('routes pair url', () => {
+  assert.deepEqual(pairingFromUrl(uri('https://eln.example.org/', 'k7q2-m9xd')), { serverUrl: 'https://eln.example.org', code: 'K7Q2M9XD' });
+  // QR 과 같은 해석 — http 서버는 개발 빌드에서만
+  assert.deepEqual(pairingFromUrl(uri('http://192.168.0.5:8080', 'K7Q2-M9XD')), { error: 'INSECURE_SERVER' });
+  assert.deepEqual(pairingFromUrl(uri('http://192.168.0.5:8080', 'K7Q2-M9XD'), { allowHttp: true }),
+    { serverUrl: 'http://192.168.0.5:8080', code: 'K7Q2M9XD' });
+});
+
+test('pair url with bad contents reports the cause instead of being ignored', () => {
+  assert.deepEqual(pairingFromUrl('goono-note://pair?code=K7Q2-M9XD'), { error: 'INSECURE_SERVER' });
+  assert.deepEqual(pairingFromUrl('goono-note://pair?server=https%3A%2F%2Fx.com'), { error: 'BAD_CODE' });
+  assert.deepEqual(pairingFromUrl(uri('https://x.com', 'K7Q2-M9XDA')), { error: 'BAD_CODE' });
 });

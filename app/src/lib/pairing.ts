@@ -48,6 +48,15 @@ export function parsePairingUri(text: string, opts: { allowHttp?: boolean } = {}
   return { serverUrl: normalizeServerUrl(server), code };
 }
 
+/**
+ * 딥링크(앱 밖에서 열린 URL) 해석. `goono-note://pair` 가 아니면 우리 링크가 아니므로 null(무시).
+ * 맞는 링크면 parsePairingUri 와 같은 결과 — 서버가 https 가 아니거나 코드가 틀린 링크는 {error} 로 돌려 원인을 알릴 수 있게 한다.
+ */
+export function pairingFromUrl(url: string, opts: { allowHttp?: boolean } = {}): PairingTarget | { error: PairingError } | null {
+  const r = parsePairingUri(url, opts);
+  return 'error' in r && r.error === 'NOT_PAIRING_QR' ? null : r;
+}
+
 /** 엉뚱한 QR 을 읽었을 때 — 연결을 시도하지 않고 원인을 알려 준다 */
 export const PARSE_ERROR_MESSAGES: Record<PairingError, string> = {
   NOT_PAIRING_QR: '구노 연구노트 연결용 QR이 아닙니다. 구노 웹에서 띄운 연결 QR을 읽어 주세요.',

@@ -193,6 +193,8 @@ async function readText(dy = 110) {
   await tid('tool-pen').click().catch(() => {});
   return v;
 }
+// 네이티브에서 App 플러그인이 보내는 appUrlOpen(딥링크)을 웹에서 흉내 낸다
+const openLink = (url) => page.evaluate(async (u) => { await window.Capacitor.Plugins.App.notifyListeners('appUrlOpen', { url: u }); }, url);
 async function waitSaved() {
   await until(async () => /기기에 저장됨/.test(await tid('saved-state').textContent()), '작업본 저장');
 }
@@ -212,6 +214,26 @@ const SECRET = '비밀실험값-7Q3Z';
 
 try {
   console.log(`E2E (앱 ${APP}, 모의 서버 ${MOCK})`);
+
+  await check('딥링크 goono-note://pair: 우리 링크가 아니면 무시, 맞으면 확인 단계(연결 요청 없음), https 아닌 서버는 원인 안내', async () => {
+    await page.goto(APP);
+    await tid('connect').waitFor();
+    await openLink('https://example.org/pair?server=https%3A%2F%2Fx.example.org&code=K7Q2-M9XD');
+    await openLink('goono-note://other?server=https%3A%2F%2Fx.example.org&code=K7Q2-M9XD');
+    await page.waitForTimeout(300);
+    assert(!(await tid('connect-confirm').count()), '우리 링크가 아니면 화면이 바뀌지 않음');
+    await openLink('goono-note://pair?server=https%3A%2F%2Feln.example.org&code=k7q2-m9xd');
+    await tid('connect-confirm').waitFor();
+    assert((await tid('connect-confirm-host').textContent()) === 'eln.example.org', '확인 단계에 서버 호스트 표시');
+    assert(/K7Q2-M9XD/.test(await page.locator('[data-testid="connect-confirm"]').textContent()), '코드는 정규화해 표시');
+    await tid('connect-confirm').getByText('취소').click();
+    await tid('connect').waitFor();
+    assert((await serverState()).devices.length === 0, '확인만 하고 취소 — 서버에 기기 등록 없음');
+    // 운영 빌드는 https 가 아닌 서버 링크를 연결 시도 없이 거부하고 원인을 알린다
+    await openLink('goono-note://pair?server=http%3A%2F%2F192.168.0.5%3A8080&code=K7Q2-M9XD');
+    await tid('connect-error').waitFor();
+    assert(/https가 아닙니다/.test(await tid('connect-error').textContent()) && !(await tid('connect-confirm').count()), 'http 서버 링크 거부');
+  });
 
   await check('연결 화면: 잘못된 코드·http QR은 요청 없이 거부, 기관 사용 안 함·시도 제한 안내', async () => {
     await page.goto(APP);
@@ -259,6 +281,10 @@ try {
     const st = await serverState();
     assert(st.devices.length === 1 && st.devices[0].name === '연구실 iPad (E2E)' && st.devices[0].userMno === 12, '서버에 기기 등록(researcher1)');
     assert((await codeState(firstCode)).usedAt, '코드 사용됨(일회용)');
+    // 이미 연결된 채 평소 화면이면 딥링크는 무시
+    await openLink('goono-note://pair?server=https%3A%2F%2Feln.example.org&code=K7Q2-M9XD');
+    await page.waitForTimeout(300);
+    assert(!(await tid('connect').count()) && !(await tid('connect-confirm').count()) && (await tid('new-note').count()) > 0, '연결된 상태의 딥링크는 무시');
   });
 
   await check('새 노트 → 곧바로 필기 페이지(펜 선택, 키보드 없이), 서버에 노트 생성', async () => {
@@ -555,6 +581,12 @@ try {
     await new Promise((res) => setTimeout(res, 50));
     r = await submitCode(expired);
     assert(r.error === INVALID_MSG, `만료된 코드 거부 (${r.error})`);
+    // 다시 연결 중 딥링크: 다른 서버의 QR 은 거부(지금 서버만), 엉뚱한 링크는 무시
+    await openLink('goono-note://pair?server=https%3A%2F%2Fother.example.org&code=K7Q2-M9XD');
+    await tid('connect-error').waitFor();
+    const wrongMsg = await tid('connect-error').textContent();
+    assert(/에 연결되어 있습니다/.test(wrongMsg) && !(await tid('connect-confirm').count()), `다른 서버 딥링크 거부 (${wrongMsg})`);
+    await tid('connect-manual').click(); // 다음 단계가 이어서 코드를 넣는다
   });
 
   await check('다른 계정(researcher2) 코드로 다시 연결 → 올리지 않은 기록이 있어 거부, 기록은 남음', async () => {

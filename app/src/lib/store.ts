@@ -3,6 +3,7 @@ import { Network } from '@capacitor/network';
 import { App as CapApp } from '@capacitor/app';
 import { db } from './db.ts';
 import { syncNow, type SyncResult } from './sync.ts';
+import { pairingFromUrl } from './pairing.ts';
 import { touchClock } from './session.ts';
 import type { LocalNote, Meta, Session } from './types.ts';
 
@@ -19,10 +20,12 @@ export interface AppState {
   lastResult: SyncResult | null;
   /** 화면 갱신용 현재 시각 (10초마다) */
   now: number;
+  /** 앱 밖에서 열린 `goono-note://pair` 링크 (id 는 새 링크마다 올라간다). 연결 화면이 받아 쓰거나, 쓸 수 없는 상황이면 App 이 비운다 */
+  pairLink: { id: number; url: string } | null;
 }
 
 let state: AppState = {
-  loaded: false, session: null, meta: null, notes: [], counts: {}, online: true, syncing: false, lastResult: null, now: Date.now(),
+  loaded: false, session: null, meta: null, notes: [], counts: {}, online: true, syncing: false, lastResult: null, now: Date.now(), pairLink: null,
 };
 const listeners = new Set<() => void>();
 
@@ -35,6 +38,19 @@ export function useApp(): AppState {
   return useSyncExternalStore((l) => { listeners.add(l); return () => listeners.delete(l); }, () => state);
 }
 export const getState = (): AppState => state;
+
+let pairLinkSeq = 0;
+/**
+ * 딥링크 수신. `goono-note://pair` 가 아닌 URL 은 우리 것이 아니므로 무시한다.
+ * http 서버 허용 여부는 화면(개발 빌드 여부)이 정하므로 여기서는 "우리 링크인가"만 가린다.
+ */
+export function openUrl(url: string): void {
+  if (!pairingFromUrl(url, { allowHttp: true })) return;
+  set({ pairLink: { id: ++pairLinkSeq, url } });
+}
+export function clearPairLink(): void {
+  if (state.pairLink) set({ pairLink: null });
+}
 
 /** 저장소에서 다시 읽어 화면에 반영 */
 export async function reload(): Promise<void> {
@@ -82,6 +98,7 @@ export async function start(): Promise<void> {
     if (s.connected) void sync();
   });
   await CapApp.addListener('resume', () => { void touchClock().then(reload).then(sync); });
+  await CapApp.addListener('appUrlOpen', (e) => openUrl(e.url));
 
   await reload();
   if (state.session) {

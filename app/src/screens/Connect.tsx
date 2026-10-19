@@ -24,10 +24,10 @@ const hostOf = (url: string) => { try { return new URL(url).host || url; } catch
  *  첫 화면(QR로 연결) → [QR 읽기 | 코드 직접 입력] → (QR·딥링크면) 확인 단계 "이 서버에 연결할까요?" → 연결 중 → 끝 / 오류
  * relogin(다시 연결)이면 서버 주소를 고정한다. 같은 계정이면 기기 데이터를 이어 쓰고, 다른 계정이면
  * 올리지 않은 기록이 있는 한 거부한다(session.ts).
- * target: 앱 밖에서 받은 QR 내용(딥링크) — 곧바로 확인 단계로 간다.
+ * target: 앱 밖에서 받은 QR 내용(딥링크) — 곧바로 확인 단계로 간다. linkError: 딥링크가 올바르지 않을 때 첫 화면에 알릴 원인.
  */
-export default function Connect({ relogin, target, onDone, onCancel }: {
-  relogin?: Session | null; target?: PairingTarget | null; onDone: () => void; onCancel?: () => void;
+export default function Connect({ relogin, target, linkError, onDone, onCancel }: {
+  relogin?: Session | null; target?: PairingTarget | null; linkError?: string; onDone: () => void; onCancel?: () => void;
 }) {
   /** 다시 연결 중이면 지금 서버의 QR 만 받는다 */
   const wrongServer = (t: PairingTarget) => (relogin && normalizeServerUrl(relogin.serverUrl) !== t.serverUrl
@@ -35,7 +35,7 @@ export default function Connect({ relogin, target, onDone, onCancel }: {
     : '');
   const [stage, setStage] = useState<Stage>(() => (target && !wrongServer(target) ? 'confirm' : 'start'));
   const [picked, setPicked] = useState<PairingTarget | null>(() => (target && !wrongServer(target) ? target : null));
-  const [error, setError] = useState(() => (target ? wrongServer(target) : ''));
+  const [error, setError] = useState(() => (target ? wrongServer(target) : linkError ?? ''));
   const [serverUrl, setServerUrl] = useState(() => relogin?.serverUrl ?? lastServer() ?? DEFAULT_SERVER);
   const [code, setCode] = useState('');
   const [deviceName, setDeviceName] = useState(relogin?.deviceName ?? '');

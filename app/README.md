@@ -9,7 +9,7 @@ Capacitor 8 + React 19 + TypeScript.
 
 | 화면 | 내용 |
 |---|---|
-| 연결 | **QR로 연결** — 구노 웹(내 설정 ▸ 태블릿 연결)에서 띄운 QR을 카메라로 읽거나(네이티브), QR 아래 8자 코드를 **코드 직접 입력**(대소문자·하이픈 무관). QR은 확인 단계("이 서버에 연결할까요?" + 서버 호스트)를 거친다. 비밀번호 화면은 개발·체험 빌드에서만 보조 링크로 |
+| 연결 | **QR로 연결** — 구노 웹(내 설정 ▸ 태블릿 연결)에서 띄운 QR을 카메라로 읽거나(네이티브), QR 아래 8자 코드를 **코드 직접 입력**(대소문자·하이픈 무관). 기본 카메라 앱으로 QR을 읽어 `goono-note://pair…` 링크가 앱을 열어도 같은 확인 단계로 온다(이미 연결된 상태에서는 "다시 연결" 화면일 때만 받고, 그 밖에는 무시). QR은 확인 단계("이 서버에 연결할까요?" + 서버 호스트)를 거친다. 비밀번호 화면은 개발·체험 빌드에서만 보조 링크로 |
 | 노트 선반 | 첫 페이지 썸네일, 프로젝트·수정 시각·상태(작성 중/올릴 버전/미반영/점검 중) |
 | 새 노트 | 프로젝트 하나면 바로, 여럿이면 고르고 "쓰기 시작". 제목은 날짜로 채우고 나중에 고친다(첫 획 전에 키보드 없음) |
 | 필기 | 펜·형광펜·지우개·올가미·글상자·도형 · 색/굵기 · 실행 취소 · 손가락 쓰기. 페이지 머리글에 제목·날짜·쪽 |
@@ -86,6 +86,11 @@ npx cap open ios
 iOS는 `ios/App/App/Info.plist`에 `NSAppTransportSecurity › NSAllowsLocalNetworking = YES`를 개발용으로만 추가한다.
 운영 구노 서버는 https.
 
+QR 연결용 네이티브 설정(`@capacitor/barcode-scanner`, `goono-note://pair` 딥링크):
+- Android: `CAMERA` 권한(카메라는 선택 — 없는 기기는 코드 직접 입력), `MainActivity` 의 VIEW intent-filter(scheme `goono-note`, host `pair`), `minSdkVersion 26`(스캐너 플러그인 요구).
+- iOS: `NSCameraUsageDescription`(카메라 사용 안내문), `CFBundleURLTypes`(scheme `goono-note`). iOS 15 이상.
+- 플러그인을 바꾼 뒤에는 `npx cap sync` 로 `ios/App/CapApp-SPM/Package.swift`·`android/capacitor.settings.gradle` 이 갱신되는지 확인한다.
+
 ### 갤럭시 탭에서 바로 해 보기 (개발용 APK)
 
 ```bash
@@ -145,6 +150,8 @@ npm run ios:dev        # 체험 모드 포함 빌드 → cap sync ios → Xcode 
 - 글상자: iPad 소프트 키보드가 글상자를 가리지 않는지, 한글 입력기(조합) 동작. 필요하면 `@capacitor/keyboard` 로 캔버스를 올린다.
 - iPad Scribble(펜으로 입력칸에 쓰면 글자로 바뀜)은 캔버스에서는 동작하지 않는다(의도: 필기는 필기로 남긴다).
 - 구노 서버가 기관 내부망(사설 IP)일 때 WebView의 로컬 네트워크 접근 정책(Chromium LNA) — E2E에서는 헤드리스 검사를 껐다.
+- **QR 스캔**(`@capacitor/barcode-scanner`): 카메라 권한 안내문·허용/거부, 구노 웹 QR 인식, 닫기(취소) 때 첫 화면으로 돌아오는지, 권한 거부 시 "코드 직접 입력" 안내. 네이티브 빌드 환경이 없어 에뮬레이션에서는 확인하지 못했다.
+- **딥링크**: 기본 카메라 앱으로 QR을 읽거나 `goono-note://pair?…` 링크를 열었을 때 앱이 확인 단계로 열리는지(앱이 꺼져 있을 때·켜져 있을 때 모두). Android 는 `adb shell am start -a android.intent.action.VIEW -d "goono-note://pair?server=…&code=…"`, iOS 는 `xcrun simctl openurl booted "goono-note://pair?…"`.
 - 키체인/키스토어 키 보존: 앱 삭제 후 재설치 시 키가 사라지면 기기 데이터는 복구 불가(설계상 의도, 원본은 서버).
 
 ## 구노 ELN 쪽 남은 일
