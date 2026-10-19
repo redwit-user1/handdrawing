@@ -5,25 +5,34 @@ import { isDemoServer } from '../lib/demo.ts';
 import { reload, sync, useApp } from '../lib/store.ts';
 import { relativeTime, sessionLock } from '../lib/rules.ts';
 import type { Project } from '../lib/types.ts';
+import { lastPaper, rememberPaper } from '../notebook/engine.ts';
+import PaperPicker from '../notebook/PaperPicker.tsx';
 import { IcPen, IcPlus } from '../icons.tsx';
 import { Chips, Dialog, LockBanner, noteChips, SyncBar } from '../ui.tsx';
 
 const LAST_PROJECT = 'goono-note.last-project';
 
-/** 프로젝트를 고르고 바로 쓰기 시작 — 제목은 날짜로 채워 두고 나중에 고친다 */
-export function NewNoteDialog({ onClose, onCreated, initialTitle, create = createNote, heading = '새 노트', submitLabel = '쓰기 시작' }: {
+const createWithPaper = (p: Project, title: string, paper: string) => createNote(p, title, undefined, paper);
+
+/**
+ * 프로젝트를 고르고 바로 쓰기 시작 — 제목은 날짜로 채워 두고 나중에 고친다.
+ * 종이는 마지막으로 고른 것이 기본 (복원처럼 이미 종이가 정해진 문서면 choosePaper=false 로 숨긴다)
+ */
+export function NewNoteDialog({ onClose, onCreated, initialTitle, create = createWithPaper, heading = '새 노트', submitLabel = '쓰기 시작', choosePaper = true }: {
   onClose: () => void;
   onCreated: (id: string) => void;
   initialTitle?: string;
-  create?: (p: Project, title: string) => Promise<{ id: string }>;
+  create?: (p: Project, title: string, paper: string) => Promise<{ id: string }>;
   heading?: string;
   submitLabel?: string;
+  choosePaper?: boolean;
 }) {
   const { meta } = useApp();
   const projects = (meta?.projects ?? []).filter((p) => p.writable);
   const last = Number(localStorage.getItem(LAST_PROJECT));
   const [projectMno, setProjectMno] = useState<number | null>(projects.some((p) => p.projectMno === last) ? last : null);
   const [title, setTitle] = useState(initialTitle ?? '');
+  const [paper, setPaper] = useState(lastPaper);
   const [busy, setBusy] = useState(false);
   const selected = projects.find((p) => p.projectMno === projectMno) ?? projects[0];
 
@@ -32,7 +41,8 @@ export function NewNoteDialog({ onClose, onCreated, initialTitle, create = creat
     setBusy(true);
     try {
       localStorage.setItem(LAST_PROJECT, String(selected.projectMno));
-      const n = await create(selected, title);
+      if (choosePaper) rememberPaper(paper);
+      const n = await create(selected, title, paper);
       await reload();
       void sync();
       onCreated(n.id);
@@ -59,6 +69,12 @@ export function NewNoteDialog({ onClose, onCreated, initialTitle, create = creat
           <label className="field">제목 <span className="muted small">비워 두면 "{defaultTitle()}"</span>
             <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder={defaultTitle()} data-testid="new-note-title" />
           </label>
+          {choosePaper && (
+            <fieldset className="project-pick">
+              <legend>종이 <span className="muted small legend-hint">· 노트 안에서도 바꿀 수 있습니다</span></legend>
+              <PaperPicker value={paper} onChange={setPaper} />
+            </fieldset>
+          )}
         </>
       )}
       <div className="row end">
@@ -81,9 +97,9 @@ export default function Notes({ onOpen, onRelogin, onLoggedOut }: { onOpen: (id:
   const writable = (meta?.projects ?? []).filter((p) => p.writable);
 
   const startNew = async () => {
-    // 쓸 수 있는 프로젝트가 하나뿐이면 묻지 않고 바로 연다
+    // 쓸 수 있는 프로젝트가 하나뿐이면 묻지 않고 바로 연다 — 종이는 마지막으로 고른 것 (노트 안 "종이"에서 바꾼다)
     if (writable.length === 1) {
-      const n = await createNote(writable[0]);
+      const n = await createNote(writable[0], '', undefined, lastPaper());
       await reload();
       void sync();
       onOpen(n.id);

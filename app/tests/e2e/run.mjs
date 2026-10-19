@@ -540,12 +540,66 @@ try {
 
   await check('미반영 버전 → 새 노트로 복원 → 서버에 올림', async () => {
     await page.locator('[data-testid="version-item"][data-state="REJECTED"] [data-testid="version-restore"]').click();
+    assert(!(await tid('paper-picker').count()), '복원은 원래 종이 그대로 — 종이 고르기 없음');
     await tid('new-note-create').click();
     await tid('palette').waitFor();
     assert((await readText(120)).includes('회수 후 작성'), '복원 내용');
     await saveVersion(/구노에 올렸습니다/);
     const n = await until(() => noteByTitle(`${B} (복원)`), '복원 노트 서버 생성');
     assert(n.versionIds.length === 1 && n.editLocation.type === 'DEVICE', '복원 노트 버전 1, 편집 위치 이 기기');
+  });
+
+  await check('종이 템플릿: 새 노트에서 고르기 → 노트 안에서 바꾸기·실행 취소 → 다시 열어도 유지, 버전 레이아웃에 실림, 다음 노트 기본값', async () => {
+    const P = '종이 템플릿 노트';
+    const paperOf = () => page.evaluate(() => window.__engine.layout.paper ?? null);
+    await tid('back').click();
+    await tid('new-note').first().click();
+    await tid('new-note-dialog').waitFor();
+    assert(await tid('paper-option-grid').getAttribute('aria-checked') === 'true', '처음 기본값은 기본 모눈');
+    assert(await page.locator('[data-testid^="paper-option-"]').count() === 7, '종이 7가지');
+    await tid('new-note-title').fill(P);
+    await tid('paper-option-lined').click();
+    await tid('new-note-create').click();
+    await tid('palette').waitFor();
+    assert(await paperOf() === 'lined', `새 노트 종이 = 줄 노트 (${await paperOf()})`);
+    await drawStrokes();
+    // 노트 안에서 바꾸기 (노트 전체)
+    await tid('paper-button').click();
+    await tid('paper-pop').waitFor();
+    assert(await tid('paper-option-lined').getAttribute('aria-checked') === 'true', '메뉴에 지금 종이 표시');
+    await tid('paper-option-engineering').click();
+    await until(async () => (await paperOf()) === 'engineering' && (await tid('paper-button').getAttribute('data-paper')) === 'engineering', '공학 모눈으로 바뀜');
+    await shot('05-paper-picker');
+    await tid('paper-button').click(); // 닫기
+    assert(!(await tid('paper-pop').count()), '종이 메뉴 닫힘');
+    // 종이 바꾸기도 편집 — 실행 취소·다시 실행
+    await tid('undo').click();
+    await until(async () => (await paperOf()) === 'lined', '실행 취소 → 줄 노트');
+    await tid('redo').click();
+    await until(async () => (await paperOf()) === 'engineering', '다시 실행 → 공학 모눈');
+    await waitSaved();
+    // 앱을 다시 열어도 유지
+    await page.reload();
+    await tid('note-list').waitFor();
+    await page.locator('[data-testid="note-card"]', { hasText: P }).click();
+    await tid('palette').waitFor();
+    await until(async () => (await paperOf()) === 'engineering', '다시 열어도 공학 모눈');
+    // 버전(웹 구노·서버 페이지 그림) 레이아웃에 실린다
+    await saveVersion(/구노에 올렸습니다/);
+    const n = await until(() => noteByTitle(P), '서버에 노트');
+    const html = await (await fetch(`${MOCK}/versions/${n.versionIds[n.versionIds.length - 1]}`)).text();
+    const fig = /data-strokes="([^"]+)"/.exec(html);
+    const docJson = JSON.parse(fig[1].replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&'));
+    assert(docJson.layout.paper === 'engineering' && docJson.layout.type === 'pages', `data-strokes 레이아웃 paper (${docJson.layout.paper})`);
+    // 다음 새 노트는 마지막으로 고른 종이로 시작
+    await tid('back').click();
+    await tid('new-note').first().click();
+    await tid('new-note-dialog').waitFor();
+    assert(await tid('paper-option-engineering').getAttribute('aria-checked') === 'true', '마지막 종이 기억');
+    await shot('06-paper-new-note');
+    await page.keyboard.press('Escape');
+    await page.locator('[data-testid="note-card"]', { hasText: P }).click();
+    await tid('palette').waitFor();
   });
 
   await check('오프라인 작성 기한 만료 → 편집 잠금, 기록은 보존', async () => {

@@ -4,7 +4,11 @@
  */
 import '../../../js/engine.js';
 
-export interface PageLayout { type: 'pages'; pageW: number; pageH: number; gap: number; minPages?: number; date?: string }
+/** paper: 종이 템플릿 id (없으면 기본 모눈) — 노트 전체에 적용, 저장 형식에 들어가 웹 구노도 같은 종이로 그린다 */
+export interface PageLayout { type: 'pages'; pageW: number; pageH: number; gap: number; minPages?: number; date?: string; paper?: string }
+
+/** 종이 템플릿 (엔진 PAPERS) — 간격은 월드 단위(페이지 폭 720 = 180mm) */
+export interface PaperSpec { id: string; name: string; kind: 'grid' | 'lines' | 'dots' | 'blank'; step?: number; major?: number }
 
 /** 저장 형식 (= 서버 data-strokes JSON) */
 export interface NotebookDoc { title: string; strokes: unknown[]; layout: PageLayout }
@@ -48,6 +52,10 @@ export interface Engine {
   scale: number;
   setStrokes(strokes: unknown[]): void;
   setLayout(layout: PageLayout | null): void;
+  /** 지금 종이 id (페이지 모드가 아니면 null) */
+  paperId(): string | null;
+  /** 노트 전체 종이 바꾸기 — 사용자 편집(실행 취소·저장 대상) */
+  setPaper(id: string): void;
   fitWidth(maxScale?: number): void;
   resize(): void;
   requestRender(bg?: boolean): void;
@@ -74,8 +82,11 @@ export interface Engine {
 
 interface HandDrawingGlobal {
   DrawingEngine: new (canvas: HTMLCanvasElement, opts: EngineOptions) => Engine;
-  defaultPageLayout: (date?: string) => PageLayout;
+  defaultPageLayout: (date?: string, paper?: string) => PageLayout;
   A4_BODY_ASPECT: number;
+  PAPERS: PaperSpec[];
+  PAPER_DEFAULT: string;
+  paperSpec: (id: unknown) => PaperSpec;
 }
 
 function hd(): HandDrawingGlobal {
@@ -90,8 +101,23 @@ export function createEngine(canvas: HTMLCanvasElement, opts: EngineOptions): En
 
 const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
-export function newDoc(title: string, createdAt = new Date()): NotebookDoc {
-  return { title, strokes: [], layout: hd().defaultPageLayout(ymd(createdAt)) };
+export function newDoc(title: string, createdAt = new Date(), paper?: string): NotebookDoc {
+  return { title, strokes: [], layout: hd().defaultPageLayout(ymd(createdAt), paper) };
+}
+
+/** 고를 수 있는 종이들 (기본 모눈이 맨 앞) */
+export function papers(): PaperSpec[] {
+  return hd().PAPERS;
+}
+export const paperSpec = (id: unknown): PaperSpec => hd().paperSpec(id);
+
+/** 마지막으로 고른 종이 — 새 노트 기본값 (프로젝트처럼 기기에 기억) */
+const LAST_PAPER = 'goono-note.last-paper';
+export function lastPaper(): string {
+  try { return paperSpec(localStorage.getItem(LAST_PAPER)).id; } catch { return hd().PAPER_DEFAULT; }
+}
+export function rememberPaper(id: string) {
+  try { localStorage.setItem(LAST_PAPER, paperSpec(id).id); } catch { /* 저장 안 됨 */ }
 }
 
 /** 페이지 머리글 — 왼쪽 "제목", 오른쪽 "2026-09-29 · 3쪽" (날짜는 노트를 만든 날, 엔진 기본 머리글과 같다) */

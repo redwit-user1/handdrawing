@@ -93,6 +93,7 @@ export default function Versions({ noteId, noteTitle, canCreate, onCreate, onClo
           heading="미반영 버전을 새 노트로 복원"
           initialTitle={`${noteTitle} (복원)`}
           submitLabel="복원"
+          choosePaper={false}
           create={(p, title) => restoreAsNewNote(restoreDoc, p, title)}
           onClose={() => setRestoring(null)}
           onCreated={(id) => { setRestoring(null); onRestored(id); }}

@@ -22,6 +22,7 @@ export const IcHand = (p: P) => <svg {...base(p)}><path d="M18 11V6.5a1.5 1.5 0 
 export const IcBack = (p: P) => <svg {...base(p)}><path d="m15 18-6-6 6-6" /></svg>;
 export const IcHistory = (p: P) => <svg {...base(p)}><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5M12 7v5l3 2" /></svg>;
 export const IcCheck = (p: P) => <svg {...base(p)}><path d="m5 12 5 5 9-10" /></svg>;
+export const IcPaper = (p: P) => <svg {...base(p)}><rect x="5" y="3" width="14" height="18" rx="2" /><path d="M5 9h14M5 15h14M11.5 9v12" strokeWidth={1.25} /></svg>;
 export const IcPlus = (p: P) => <svg {...base(p)}><path d="M12 5v14M5 12h14" /></svg>;
 export const IcClose = (p: P) => <svg {...base(p)}><path d="M6 6l12 12M18 6 6 18" /></svg>;
 export const IcTrash = (p: P) => <svg {...base(p)}><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" /></svg>;

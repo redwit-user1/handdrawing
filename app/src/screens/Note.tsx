@@ -4,12 +4,13 @@ import { db } from '../lib/db.ts';
 import { createVersion, getDoc, renameNote, requestRelease, saveWorking } from '../lib/notes.ts';
 import { autoVersionNow, deadlineLabel, editBlock, PEN_IDLE_MS, relativeTime, sessionLock } from '../lib/rules.ts';
 import { reload, sync, useApp } from '../lib/store.ts';
-import { createEngine, headerFor, type Engine, type ImageObject, type NotebookDoc, type Stroke, type TableObject } from '../notebook/engine.ts';
+import { createEngine, headerFor, rememberPaper, type Engine, type ImageObject, type NotebookDoc, type Stroke, type TableObject } from '../notebook/engine.ts';
+import PaperPicker from '../notebook/PaperPicker.tsx';
 import ToolPalette, { INK_COLORS, INK_SIZES, type InsertKind, type PaletteState } from '../notebook/ToolPalette.tsx';
 import TableDialog, { type TableValue } from '../notebook/insert/TableDialog.tsx';
 import FormulaDialog, { type FormulaKind } from '../notebook/insert/FormulaDialog.tsx';
 import type { StructureResult } from '../notebook/insert/StructureSheet.tsx';
-import { IcBack, IcCheck, IcCopy, IcEdit, IcHand, IcHistory, IcLock, IcSync, IcText, IcTrash } from '../icons.tsx';
+import { IcBack, IcCheck, IcCopy, IcEdit, IcHand, IcHistory, IcLock, IcPaper, IcSync, IcText, IcTrash } from '../icons.tsx';
 import { Boundary, Dialog, fmtDateTime, LockBanner } from '../ui.tsx';
 import Versions from './Versions.tsx';
 
@@ -120,6 +121,9 @@ export default function Note({ id, onBack, onOpen, onRelogin }: { id: string; on
   const [inserting, setInserting] = useState<InsertState | null>(null);
   const [orientation, setOrientation] = useState<'rail' | 'bar'>('rail');
   const [statusOpen, setStatusOpen] = useState(false);
+  const [paper, setPaper] = useState('grid');
+  const [paperOpen, setPaperOpen] = useState(false);
+  const paperRef = useRef<HTMLDivElement>(null);
   const [editingTitle, setEditingTitle] = useState(false);
   const [confirmRelease, setConfirmRelease] = useState(false);
   const [showVersions, setShowVersions] = useState(false);
@@ -183,6 +187,8 @@ export default function Note({ id, onBack, onOpen, onRelogin }: { id: string; on
         const undo = engine.undoStack.length > 0, redo = engine.redoStack.length > 0;
         setHistory((h) => (h.undo === undo && h.redo === redo ? h : { undo, redo }));
         setEmpty(engine.strokes.length === 0);
+        const pid = engine.paperId() ?? 'grid'; // 종이 바꾸기·실행 취소도 여기로 온다
+        setPaper((p) => (p === pid ? p : pid));
         if (!userEdit || readOnlyRef.current) return;
         lastEditAt.current = Date.now();
         if (!dirtyRef.current) {
@@ -217,6 +223,7 @@ export default function Note({ id, onBack, onOpen, onRelogin }: { id: string; on
       engine.setLayout(doc.layout);
       engine.setStrokes(JSON.parse(JSON.stringify(doc.strokes)));
       setEmpty(doc.strokes.length === 0);
+      setPaper(engine.paperId() ?? 'grid');
       setLoaded(true);
     })();
     return () => {
@@ -228,7 +235,7 @@ export default function Note({ id, onBack, onOpen, onRelogin }: { id: string; on
         engine.commitText();
         if (dirtyRef.current && docRef.current && !readOnlyRef.current) {
           dirtyRef.current = false;
-          await saveWorking(id, { ...docRef.current, strokes: engine.strokes });
+          await saveWorking(id, { ...docRef.current, layout: engine.layout ?? docRef.current.layout, strokes: engine.strokes });
         }
         await createVersion(id, true);
         await reload();
@@ -278,6 +285,15 @@ export default function Note({ id, onBack, onOpen, onRelogin }: { id: string; on
     apply();
     return () => ro.disconnect();
   }, [loaded, readOnly]);
+
+  // 종이 메뉴: 바깥을 누르면 닫는다 (메뉴 안에서 여러 종이를 눌러 보며 고를 수 있게 고를 때는 닫지 않는다)
+  useEffect(() => {
+    if (!paperOpen) return;
+    const close = (e: PointerEvent) => { if (!paperRef.current?.contains(e.target as Node)) setPaperOpen(false); };
+    window.addEventListener('pointerdown', close);
+    return () => window.removeEventListener('pointerdown', close);
+  }, [paperOpen]);
+  useEffect(() => { if (readOnly) setPaperOpen(false); }, [readOnly]);
 
   // 처음 열 때 페이지 폭 맞춤
   useEffect(() => { if (loaded) engineRef.current?.fitWidth(); }, [loaded, orientation]);
@@ -417,6 +433,12 @@ export default function Note({ id, onBack, onOpen, onRelogin }: { id: string; on
     placeImage(st.target, toBase64Svg(r.svg), Math.round(r.w * k), Math.round(r.h * k), { kind: 'chem', molfile: r.molfile, smiles: r.smiles });
   };
 
+  /** 노트 전체 종이 바꾸기 — 엔진이 실행 취소에 넣고 onChange 로 저장을 예약한다 */
+  const pickPaper = (pid: string) => {
+    engineRef.current?.setPaper(pid);
+    rememberPaper(pid); // 다음 새 노트도 이 종이로
+  };
+
   const commitTitle = async (value: string) => {
     setEditingTitle(false);
     const t = value.trim();
@@ -478,6 +500,19 @@ export default function Note({ id, onBack, onOpen, onRelogin }: { id: string; on
           )}
         </div>
 
+        {!readOnly && loaded && (
+          <div className="pal-anchor" ref={paperRef}>
+            <button className="btn ghost" onClick={() => setPaperOpen((v) => !v)} aria-expanded={paperOpen} data-testid="paper-button" data-paper={paper}>
+              <IcPaper /> 종이
+            </button>
+            {paperOpen && (
+              <div className="paper-pop" role="dialog" aria-label="종이 고르기" data-testid="paper-pop">
+                <p className="small muted">노트의 모든 페이지에 적용됩니다. 쓴 내용은 그대로입니다.</p>
+                <PaperPicker value={paper} onChange={pickPaper} />
+              </div>
+            )}
+          </div>
+        )}
         <button className="btn ghost" onClick={() => setShowVersions(true)} data-testid="open-versions">
           <IcHistory /> 버전{c?.rejected ? <span className="badge danger" aria-label={`미반영 ${c.rejected}`}>{c.rejected}</span> : null}
         </button>

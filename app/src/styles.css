@@ -411,3 +411,19 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .
 .login-card .mono, .field .connect-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .06em; }
 .field .connect-code { font-size: 22px; text-transform: uppercase; }
 .field .connect-code::placeholder { text-transform: none; letter-spacing: .06em; }
+
+/* 종이(모눈) 고르기 — 새 노트 대화상자, 노트 화면 "종이" 메뉴 */
+.paper-pick { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.paper-opt {
+  display: grid; justify-items: center; align-content: start; gap: 6px; min-height: 48px; padding: 10px 4px 8px;
+  border: 1px solid var(--line); border-radius: var(--r-m); background: var(--panel); color: var(--ink-2); font-size: var(--fs-s); cursor: pointer;
+}
+.paper-opt:hover:not(.active) { background: var(--panel-2); }
+.paper-opt.active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-strong); font-weight: 650; }
+.paper-thumb { display: block; width: 52px; height: 72px; border-radius: 3px; box-shadow: 0 1px 3px rgba(16, 24, 40, 0.14), 0 0 0 1px rgba(16, 24, 40, 0.04); }
+.paper-pop {
+  position: absolute; right: 0; top: calc(100% + 8px); z-index: 30; width: 420px; padding: 14px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-m); box-shadow: var(--shadow-pop);
+}
+.paper-pop p { margin: 0 0 10px; }
+.legend-hint { font-weight: 400; margin-left: 2px; }

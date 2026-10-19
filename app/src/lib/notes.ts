@@ -13,7 +13,8 @@ export function defaultTitle(d = new Date()): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} 연구노트`;
 }
 
-export async function createNote(project: Project, title = '', initial?: NotebookDoc): Promise<LocalNote> {
+/** paper: 새 노트의 종이 (initial 이 있으면 그 문서의 종이를 그대로 쓴다) */
+export async function createNote(project: Project, title = '', initial?: NotebookDoc, paper?: string): Promise<LocalNote> {
   const now = new Date().toISOString();
   const t = title.trim() || defaultTitle();
   const note: LocalNote = {
@@ -35,7 +36,7 @@ export async function createNote(project: Project, title = '', initial?: Noteboo
     workingDirty: !!initial?.strokes.length,
     thumb: null,
   };
-  const doc: NotebookDoc = initial ? { ...initial, title: t } : newDoc(t, new Date(now));
+  const doc: NotebookDoc = initial ? { ...initial, title: t } : newDoc(t, new Date(now), paper);
   await db.putWorking(note.id, { doc, savedAt: now });
   await db.addNote(note);
   if (initial?.strokes.length) await refreshThumb(note.id, doc, now);

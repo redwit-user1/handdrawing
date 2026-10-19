@@ -111,6 +111,28 @@ class DrawingEngine {
     if (this.layout) this.fitWidth();
   }
 
+  /** 지금 종이 템플릿 id (페이지 모드가 아니면 null). 모르는 id 는 기본 모눈으로 본다 */
+  paperId() {
+    return this.layout ? paperSpec(this.layout.paper).id : null;
+  }
+
+  /** 노트 전체의 종이를 바꾼다 — 필기처럼 사용자 편집이라 실행 취소되고 저장된다 */
+  setPaper(id) {
+    if (!this.layout || this.readonly) return;
+    if (!PAPERS.some((p) => p.id === id)) return;
+    const before = this.layout.paper;
+    const after = id === PAPER_DEFAULT ? undefined : id;
+    if (before === after) return;
+    this._pushUndo({ type: 'paper', before, after });
+    this._setPaper(after);
+    this.requestRender(true);
+    this._emitChange(true);
+  }
+
+  _setPaper(v) {
+    if (v === undefined) delete this.layout.paper; else this.layout.paper = v;
+  }
+
   _pageStride() { return this.layout.pageH + this.layout.gap; }
 
   pageRect(i) {
@@ -225,6 +247,8 @@ class DrawingEngine {
       applyTextState(op.stroke, op.after);
     } else if (op.type === 'replace') {
       restoreSnapshot(op.stroke, op.after);
+    } else if (op.type === 'paper') {
+      if (this.layout) this._setPaper(op.after);
     }
   }
 
@@ -250,6 +274,8 @@ class DrawingEngine {
       applyTextState(op.stroke, op.before);
     } else if (op.type === 'replace') {
       restoreSnapshot(op.stroke, op.before);
+    } else if (op.type === 'paper') {
+      if (this.layout) this._setPaper(op.before);
     }
   }
 
@@ -1127,6 +1153,57 @@ class DrawingEngine {
     }
   }
 
+  /**
+   * 종이 무늬 (머리글 아래 본문에만). 기본 모눈은 예전과 같은 순서·굵기로 그려 옛 노트 그림이 바뀌지 않게 한다.
+   * 선·점은 머리글 구분선에서부터 step 마다, 세로선은 페이지 왼쪽 끝에서부터 step 마다.
+   */
+  _drawPaperPattern(ctx, r, hh, hair, spec) {
+    const step = spec.step;
+    const top = r.y + hh;
+    if (spec.kind === 'grid') {
+      const major = spec.major || 0;
+      const isMajor = (k) => major > 0 && k % major === 0;
+      const lines = (pick) => {
+        ctx.beginPath();
+        for (let k = 1; r.x + k * step < r.x + r.w; k++) {
+          if (pick(k)) { const gx = r.x + k * step; ctx.moveTo(gx, top); ctx.lineTo(gx, r.y + r.h); }
+        }
+        for (let k = 1; top + k * step < r.y + r.h; k++) {
+          if (pick(k)) { const gy = top + k * step; ctx.moveTo(r.x, gy); ctx.lineTo(r.x + r.w, gy); }
+        }
+        ctx.stroke();
+      };
+      ctx.strokeStyle = PAGE_GRID;
+      ctx.lineWidth = Math.max(hair, 0.6);
+      lines((k) => !isMajor(k));
+      if (major) {
+        ctx.strokeStyle = PAGE_GRID_MAJOR;
+        ctx.lineWidth = Math.max(hair, 0.9);
+        lines(isMajor);
+      }
+    } else if (spec.kind === 'lines') {
+      ctx.strokeStyle = PAGE_RULE;
+      ctx.lineWidth = Math.max(hair, 0.8);
+      ctx.beginPath();
+      for (let gy = top + step; gy < r.y + r.h; gy += step) {
+        ctx.moveTo(r.x, gy); ctx.lineTo(r.x + r.w, gy);
+      }
+      ctx.stroke();
+    } else if (spec.kind === 'dots') {
+      ctx.fillStyle = PAGE_DOT;
+      const rad = Math.max(hair * 1.1, 1);
+      ctx.beginPath();
+      for (let gy = top + step; gy < r.y + r.h; gy += step) {
+        for (let gx = r.x + step; gx < r.x + r.w; gx += step) {
+          ctx.moveTo(gx + rad, gy);
+          ctx.arc(gx, gy, rad, 0, Math.PI * 2);
+        }
+      }
+      ctx.fill();
+    }
+    // blank: 무늬 없음
+  }
+
   /** 페이지 i 의 모눈·머리글 (월드 좌표 변환이 걸린 ctx 에 그린다). hair = 1 화면 px 의 월드 길이 */
   _drawPaper(ctx, i, count, hair) {
     const r = this.pageRect(i);
@@ -1135,18 +1212,7 @@ class DrawingEngine {
     ctx.beginPath();
     ctx.rect(r.x, r.y, r.w, r.h);
     ctx.clip();
-    if (this.showGrid) {
-      ctx.strokeStyle = PAGE_GRID;
-      ctx.lineWidth = Math.max(hair, 0.6);
-      ctx.beginPath();
-      for (let gx = r.x + PAGE_GRID_STEP; gx < r.x + r.w; gx += PAGE_GRID_STEP) {
-        ctx.moveTo(gx, r.y + hh); ctx.lineTo(gx, r.y + r.h);
-      }
-      for (let gy = r.y + hh + PAGE_GRID_STEP; gy < r.y + r.h; gy += PAGE_GRID_STEP) {
-        ctx.moveTo(r.x, gy); ctx.lineTo(r.x + r.w, gy);
-      }
-      ctx.stroke();
-    }
+    if (this.showGrid) this._drawPaperPattern(ctx, r, hh, hair, paperSpec(this.layout.paper));
     // 머리글: 왼쪽 (제목·날짜), 오른쪽 (쪽 번호) + 가는 구분선
     const head = this.pageHeader ? this.pageHeader(i, count)
       : { left: this.title, right: `${this.layout.date ? this.layout.date + ' · ' : ''}${i + 1}쪽` };
@@ -1714,8 +1780,33 @@ const PAGE_HEADER_H = 44;
 const PAGE_GRID_STEP = 24;
 const PAGE_DESK = '#e6e9ee';
 const PAGE_GRID = '#e9edf3';
+const PAGE_GRID_MAJOR = '#d7dee8';  // 공학 모눈 굵은 칸 (머리글 구분선보다 옅게)
+const PAGE_RULE = '#dfe5ed';        // 줄 노트
+const PAGE_DOT = '#c3ccd8';         // 점 모눈 (점은 작아서 선보다 한 단계 진하게)
 const PAGE_HEAD_INK = '#7a8494';
 const PAGE_HEAD_RULE = '#cfd6e0';
+
+/*
+ * 종이(모눈) 템플릿 — layout.paper 에 id 로 저장한다. 없으면 기본 모눈(지금까지의 모양).
+ * 간격은 월드 단위: 페이지 폭 720 = A4 본문 180mm 이라 1mm = 4.
+ *   grid: step 간격 격자 (major 칸마다 굵은 선), lines: 가로줄, dots: 격자점, blank: 무지
+ */
+const PAPER_DEFAULT = 'grid';
+const PAPERS = [
+  { id: 'grid', name: '기본 모눈', kind: 'grid', step: PAGE_GRID_STEP },     // 6mm
+  { id: 'grid-5mm', name: '5mm 모눈', kind: 'grid', step: 20 },
+  { id: 'grid-10mm', name: '10mm 모눈', kind: 'grid', step: 40 },
+  { id: 'engineering', name: '공학 모눈', kind: 'grid', step: 16, major: 5 }, // 4mm, 20mm 마다 굵게
+  { id: 'lined', name: '줄 노트', kind: 'lines', step: 28 },                 // 7mm 줄
+  { id: 'dots', name: '점 모눈', kind: 'dots', step: 20 },                   // 5mm 점
+  { id: 'blank', name: '무지', kind: 'blank' },
+];
+const PAPER_ID_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
+
+/** 종이 id → 그리는 법. 모르는 id 는 기본 모눈 */
+function paperSpec(id) {
+  return PAPERS.find((p) => p.id === id) || PAPERS[0];
+}
 
 /* 표 */
 const TABLE_TEXT = 15;
@@ -1741,13 +1832,16 @@ function normalizePageLayout(l) {
     minPages: Number(l.minPages) > 0 ? Number(l.minPages) : 1,
     // 노트를 만든 날 (페이지 머리글) — 웹에서 다시 열어 내보내도 같은 머리글이 나오게 레이아웃에 둔다
     ...(typeof l.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(l.date) ? { date: l.date } : {}),
+    // 종이 템플릿 — 없으면 기본 모눈. 모르는 id 도 형식이 맞으면 남긴다(다음 판에서 만든 노트를 고쳐 저장해도 잃지 않게, 그리기는 기본 모눈)
+    ...(typeof l.paper === 'string' && PAPER_ID_RE.test(l.paper) ? { paper: l.paper } : {}),
   };
 }
 
-/** 새 페이지 노트의 기본 레이아웃 (저장 형식에 그대로 들어간다) */
-function defaultPageLayout(date) {
+/** 새 페이지 노트의 기본 레이아웃 (저장 형식에 그대로 들어간다). 기본 모눈이면 paper 를 넣지 않는다 */
+function defaultPageLayout(date, paper) {
   const l = { type: 'pages', pageW: PAGE_W, pageH: PAGE_H, gap: PAGE_GAP };
   if (date) l.date = date;
+  if (paper && paper !== PAPER_DEFAULT && PAPERS.some((p) => p.id === paper)) l.paper = paper;
   return l;
 }
 
@@ -1920,5 +2014,5 @@ function pointInPolygon(x, y, polygon) {
 /* 모듈 없이 쓰는 호스트(태블릿 앱 등)를 위한 전역 노출 */
 if (typeof window !== 'undefined') {
   window.DrawingEngine = DrawingEngine;
-  window.HandDrawing = { DrawingEngine, defaultPageLayout, A4_BODY_ASPECT };
+  window.HandDrawing = { DrawingEngine, defaultPageLayout, normalizePageLayout, A4_BODY_ASPECT, PAPERS, PAPER_DEFAULT, paperSpec };
 }
