@@ -1,7 +1,8 @@
 import { api, ApiError } from './api.ts';
 import { db } from './db.ts';
 import { uploadPayload } from './notes.ts';
-import { applyServerNote, classifyUploadError, REJECT_MESSAGES } from './rules.ts';
+import { applyServerNote, classifyUploadError, REJECT_MESSAGES, stopsSync } from './rules.ts';
+import { PAIR_ERROR_MESSAGES } from './pairing.ts';
 import type { LocalNote, LocalVersion, Session } from './types.ts';
 
 /**
@@ -94,7 +95,8 @@ async function runSync(): Promise<SyncResult> {
         await markAuth(e);
         return { ...result, error: e.message };
       }
-      return { ...result, offline: e.isNetwork, error: e.message };
+      // 기관이 태블릿 연결을 끄면 연결 화면과 같은 안내 문구
+      return { ...result, offline: e.isNetwork, error: e.code === 'APP_DISABLED' ? PAIR_ERROR_MESSAGES.APP_DISABLED : e.message };
     }
     return { ...result, error: String((e as Error)?.message ?? e) };
   }
@@ -123,7 +125,7 @@ async function syncNote(session: Session, note: LocalNote): Promise<{ sent: numb
       noteMno = r.noteMno;
       await db.updateNote(note.id, (n) => ({ ...n, noteMno: r.noteMno, serverStatus: r.status, syncIssue: null }));
     } catch (e) {
-      if (!(e instanceof ApiError) || e.isNetwork || e.status === 401 || e.status >= 500) throw e;
+      if (!(e instanceof ApiError) || stopsSync(e.status, e.code)) throw e;
       await db.updateNote(note.id, (n) => ({
         ...n, releaseRequested: false,
         syncIssue: { code: e.code, message: REJECT_MESSAGES[e.code] ?? e.message, at: new Date().toISOString() },
@@ -193,7 +195,7 @@ async function syncNote(session: Session, note: LocalNote): Promise<{ sent: numb
         await db.updateNote(note.id, (n) => ({ ...n, released: true, releaseRequested: false, editLocation: 'WEB', syncIssue: null }));
         out.released++;
       } catch (e) {
-        if (!(e instanceof ApiError) || e.isNetwork || e.status === 401 || e.status >= 500) throw e;
+        if (!(e instanceof ApiError) || stopsSync(e.status, e.code)) throw e;
         await db.updateNote(note.id, (n) => ({
           ...n,
           releaseRequested: false,

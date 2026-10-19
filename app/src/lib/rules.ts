@@ -79,11 +79,18 @@ export type UploadOutcome = 'STOP' | 'AUTH' | 'RETRY' | 'SKIP' | 'REJECT_NOTE';
 export const MAX_HASH_RETRIES = 3;
 
 export function classifyUploadError(status: number, code: string, attempts: number): UploadOutcome {
-  if (status === 0 || status >= 500 || status === 429) return 'STOP';
+  // APP_DISABLED(기관이 태블릿 연결을 끔)는 노트 탓이 아니다 — 대기 버전을 그대로 두고 멈춘다
+  if (status === 0 || status >= 500 || status === 429 || code === 'APP_DISABLED') return 'STOP';
   if (status === 401) return 'AUTH';
   if (code === 'HASH_MISMATCH') return attempts + 1 >= MAX_HASH_RETRIES ? 'SKIP' : 'RETRY';
   if (code === 'NOT_EDIT_OWNER' || code === 'NOT_WRITABLE' || code === 'STALE_BASE' || status === 404 || status === 403) return 'REJECT_NOTE';
   return 'SKIP';
+}
+
+/** 노트 만들기·반납 실패 중 이번 동기화를 멈춰야 하는 것(연결·서버 장애·인증·기관 사용 안 함). 그 밖은 그 노트의 문제로 남긴다 */
+export function stopsSync(status: number, code: string): boolean {
+  const o = classifyUploadError(status, code, 0);
+  return o === 'STOP' || o === 'AUTH';
 }
 
 export const REJECT_MESSAGES: Record<string, string> = {

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyServerNote, classifyUploadError, CLOCK_ROLLBACK_TOLERANCE_MS, editBlock, sessionLock } from '../../src/lib/rules.ts';
+import { applyServerNote, classifyUploadError, CLOCK_ROLLBACK_TOLERANCE_MS, editBlock, sessionLock, stopsSync } from '../../src/lib/rules.ts';
 
 const NOW = Date.parse('2026-09-29T10:00:00Z');
 const session = (over = {}) => ({
@@ -79,4 +79,20 @@ test('업로드 오류 분류', () => {
   assert.equal(classifyUploadError(422, 'HASH_MISMATCH', 0), 'RETRY');
   assert.equal(classifyUploadError(422, 'HASH_MISMATCH', 2), 'SKIP');
   assert.equal(classifyUploadError(413, 'TOO_LARGE', 0), 'SKIP');
+});
+
+test('기관이 태블릿 연결을 끄면(403 APP_DISABLED) 멈춤 — 대기 버전을 미반영으로 돌리지 않는다', () => {
+  assert.equal(classifyUploadError(403, 'APP_DISABLED', 0), 'STOP');
+  // 그 밖의 403 은 이 노트 문제
+  assert.equal(classifyUploadError(403, 'PROJECT_NOT_WRITABLE', 0), 'REJECT_NOTE');
+  assert.equal(classifyUploadError(404, 'NOT_FOUND', 0), 'REJECT_NOTE');
+});
+
+test('노트 만들기·반납 실패 중 동기화를 멈추는 것', () => {
+  for (const [s, c] of [[0, 'NETWORK'], [503, 'HTTP_503'], [429, 'TOO_MANY_ATTEMPTS'], [401, 'TOKEN_EXPIRED'], [401, 'DEVICE_REVOKED'], [403, 'APP_DISABLED']]) {
+    assert.equal(stopsSync(s, c), true, `${s} ${c}`);
+  }
+  for (const [s, c] of [[403, 'PROJECT_NOT_WRITABLE'], [409, 'NOT_EDIT_OWNER'], [409, 'VERSION_MISMATCH'], [404, 'NOT_FOUND'], [400, 'BAD_REQUEST']]) {
+    assert.equal(stopsSync(s, c), false, `${s} ${c}`);
+  }
 });
