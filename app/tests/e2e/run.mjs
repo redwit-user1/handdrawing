@@ -577,17 +577,26 @@ try {
     assert((await tid('lock-banner').count()) === 0, '잠금 해제');
   });
 
-  await check('기기 사용 중지(폐기) → 잠금', async () => {
+  let versionsBeforeRevoke;
+  await check('오프라인 대기 버전이 있는 채로 기기 사용 중지(폐기) → 잠금, 대기 버전은 기기에 남음', async () => {
+    // 오프라인에서 더 쓰고 버전 저장 → 기기 대기 1
+    await setOffline(true);
+    await drawStrokes(200);
+    await saveVersion(/기기에 저장했습니다/);
+    await until(async () => (await pendingCount()) === 1, '올릴 버전 1');
+    versionsBeforeRevoke = (await noteByTitle(C)).versionIds.length;
+    // 그사이 구노에서 기기 사용 중지 → 연결되면 동기화가 거부되어 잠금
     const st = await serverState();
     await admin(`/devices/${st.devices[0].deviceId}/revoke`, {});
-    await tid('status-pill').click();
-    await tid('sync-now').click();
-    await until(async () => (await lockOf()) === 'REVOKED', '폐기 잠금');
+    await setOffline(false);
+    await until(async () => (await lockOf()) === 'REVOKED', '폐기 잠금', 20_000);
     assert(!(await paletteVisible()), '필기 도구 숨김');
+    assert((await pendingCount()) === 1, `대기 버전 유지 (${await pendingCount()})`);
+    assert((await noteByTitle(C)).versionIds.length === versionsBeforeRevoke, '서버는 폐기 뒤 버전을 받지 않음');
     await shot('06-revoked');
   });
 
-  await check('폐기 후 "다시 연결" → 새 코드 → 잠금 해제·기기 기록 유지', async () => {
+  await check('폐기 후 "다시 연결" → 새 코드 → 잠금 해제, 대기 버전 업로드·기기 기록 유지', async () => {
     await tid('reconnect').click();
     await tid('connect').waitFor();
     assert(/사용 중지/.test(await tid('connect').textContent()), '사용 중지 안내');
@@ -597,6 +606,10 @@ try {
     assert(r.ok, `연결 (${r.error})`);
     await tid('palette').waitFor();
     assert((await tid('lock-banner').count()) === 0, '잠금 해제');
+    // 폐기 전에 써 둔 대기 버전이 이어서 올라간다
+    await waitAllSent();
+    const n = await until(async () => { const x = await noteByTitle(C); return x.versionIds.length === versionsBeforeRevoke + 1 && x; }, '대기 버전 업로드');
+    assert(n.editLocation.type === 'DEVICE', '편집 위치 이 기기 유지');
     await tid('back').click();
     await tid('note-list').waitFor();
     for (const t of [A2, B, `${B} (복원)`, C]) {
