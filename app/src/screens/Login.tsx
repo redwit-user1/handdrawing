@@ -29,7 +29,7 @@ export function startDemo(deviceName: string): Promise<Session> {
  *  - 그 밖: 아이디·비밀번호 연결(`/devices/register`, 서버 설정으로 켰을 때만 동작). relogin 이면 서버·아이디 고정
  */
 export default function Login({ relogin, demoOnly, onDone, onCancel }: {
-  relogin?: Session | null; demoOnly?: boolean; onDone: () => void; onCancel?: () => void;
+  relogin?: Session | null; demoOnly?: boolean; onDone: (s: Session) => void; onCancel?: () => void;
 }) {
   const [serverUrl, setServerUrl] = useState(() => relogin?.serverUrl ?? lastServer() ?? DEFAULT_SERVER);
   const [loginId, setLoginId] = useState(relogin?.user.loginId ?? '');
@@ -47,9 +47,9 @@ export default function Login({ relogin, demoOnly, onDone, onCancel }: {
     setBusy(true);
     setError('');
     try {
-      await login(serverUrl, loginId.trim(), password, deviceName.trim() || '태블릿');
+      const s = await login(serverUrl, loginId.trim(), password, deviceName.trim() || '태블릿');
       rememberServer(serverUrl);
-      onDone();
+      onDone(s);
     } catch (err) {
       setError(err instanceof ApiError && err.isNetwork ? NETWORK_ERROR_MESSAGE : (err as Error).message);
     } finally {
@@ -61,8 +61,7 @@ export default function Login({ relogin, demoOnly, onDone, onCancel }: {
     setBusy(true);
     setError('');
     try {
-      await startDemo(deviceName);
-      onDone();
+      onDone(await startDemo(deviceName));
     } catch (err) {
       setError((err as Error).message);
     } finally {

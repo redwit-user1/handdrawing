@@ -27,7 +27,7 @@ const hostOf = (url: string) => { try { return new URL(url).host || url; } catch
  * target: 앱 밖에서 받은 QR 내용(딥링크) — 곧바로 확인 단계로 간다. linkError: 딥링크가 올바르지 않을 때 첫 화면에 알릴 원인.
  */
 export default function Connect({ relogin, target, linkError, onDone, onCancel }: {
-  relogin?: Session | null; target?: PairingTarget | null; linkError?: string; onDone: () => void; onCancel?: () => void;
+  relogin?: Session | null; target?: PairingTarget | null; linkError?: string; onDone: (s: Session) => void; onCancel?: () => void;
 }) {
   /** 다시 연결 중이면 지금 서버의 QR 만 받는다 */
   const wrongServer = (t: PairingTarget) => (relogin && !sameServer(relogin.serverUrl, t.serverUrl)
@@ -80,9 +80,9 @@ export default function Connect({ relogin, target, linkError, onDone, onCancel }
     setBusy(true);
     setError('');
     try {
-      await pair(url, pairingCode, deviceName.trim() || '태블릿');
+      const s = await pair(url, pairingCode, deviceName.trim() || '태블릿');
       rememberServer(normalizeServerUrl(url));
-      onDone();
+      onDone(s);
     } catch (e) {
       setError(pairErrorMessage(e as Failure));
     } finally {
@@ -106,8 +106,7 @@ export default function Connect({ relogin, target, linkError, onDone, onCancel }
     setBusy(true);
     setError('');
     try {
-      await startDemo(deviceName);
-      onDone();
+      onDone(await startDemo(deviceName));
     } catch (e) {
       setError((e as Error).message);
     } finally {

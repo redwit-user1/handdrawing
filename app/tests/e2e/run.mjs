@@ -570,6 +570,12 @@ try {
     await admin('/config', { tokenTtlMs: null });
     await setOffline(false);
     await until(async () => (await lockOf()) === 'NEEDS_LOGIN', '다시 연결 요구', 20_000);
+    // 잠긴 채 노트 화면에서 딥링크가 오면 다시 연결 화면이 열려 받는다(무시하지 않음). 다른 서버 QR 이라 원인 안내
+    await openLink('goono-note://pair?server=https%3A%2F%2Fnext.example.org&code=K7Q2-M9XD');
+    await tid('connect-error').waitFor();
+    assert(/에 연결되어 있습니다/.test(await tid('connect-error').textContent()) && (await tid('connect-account').count()) === 1,
+      '잠긴 상태의 딥링크 → 다시 연결 화면');
+    await tid('connect').getByText('취소').click();
     await tid('reconnect').click();
     await tid('connect').waitFor();
     assert(/김연구\(researcher1\)/.test(await tid('connect-account').textContent()), '연결된 계정 표시');
