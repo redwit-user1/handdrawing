@@ -602,6 +602,122 @@ try {
     await tid('palette').waitFor();
   });
 
+  await check('손 입력: 손바닥을 대고 펜으로 써도 획이 남고 화면은 그대로, 손가락 탭으로 선택·글상자, 선택 안에서 끌면 옮기기, 두 손가락 확대', async () => {
+    // 손가락은 CDP 터치, 펜은 CDP 마우스(pointerType pen). 단, Chromium 은 펜이 오면 진행 중인 터치를 취소해 버려서
+    // (iPad 는 손바닥 터치를 그대로 둔다) 손바닥 → 펜 순서는 엔진 캔버스에 PointerEvent 를 직접 보내 재현한다.
+    const cdp = await context.newCDPSession(page);
+    const st = () => page.evaluate(() => {
+      const e = window.__engine;
+      return { n: e.strokes.length, tx: e.tx, ty: e.ty, scale: e.scale, sel: e.selectedStrokes().length, undo: e.undoStack.length };
+    });
+    const T = (type, pts) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: pts });
+    const fingerTap = async ([x, y]) => { await T('touchStart', [{ x, y, id: 0 }]); await T('touchEnd', []); };
+    const fingerDrag = async ([x0, y0], [x1, y1], steps = 10) => {
+      await T('touchStart', [{ x: x0, y: y0, id: 0 }]);
+      for (let i = 1; i <= steps; i++) await T('touchMove', [{ x: x0 + (x1 - x0) * i / steps, y: y0 + (y1 - y0) * i / steps, id: 0 }]);
+      await T('touchEnd', []);
+    };
+    const samePts = (a, b) => a.every((p, i) => Math.abs(p[0] - b[i][0]) < 0.01 && Math.abs(p[1] - b[i][1]) < 0.01);
+    const settle = () => page.waitForTimeout(700); // 펜을 쓴 뒤 0.6초 동안 손가락은 손바닥으로 보고 무시한다
+    const tableCenter = () => page.evaluate(() => {
+      const e = window.__engine, t = e.strokes.find((s) => s.tool === 'table'), r = e.canvas.getBoundingClientRect();
+      const [[x0, y0], [x1, y1]] = t.points;
+      return { c: [r.left + ((x0 + x1) / 2) * e.scale + e.tx, r.top + ((y0 + y1) / 2) * e.scale + e.ty], pts: t.points.map((p) => p.slice()) };
+    });
+
+    // 손가락으로 쓰기 꺼짐 (펜이 닿으면 앱이 끈다) + 펜
+    if ((await tid('tool-touch').getAttribute('aria-pressed')) === 'true') await tid('tool-touch').click();
+    await tid('tool-pen').click();
+    await page.evaluate(() => window.__engine.fitWidth());
+    await settle();
+
+    // 1) 손바닥이 먼저 닿고(가만히 → 조금 끌림) 펜으로 쓴다: 획이 남고, 펜이 닿은 뒤로는 손바닥이 화면을 끌지 않는다
+    const palm = await page.evaluate(async () => {
+      const e = window.__engine, c = e.canvas, b = c.getBoundingClientRect();
+      const ev = (type, id, ptype, x, y) => c.dispatchEvent(new PointerEvent(type, {
+        pointerId: id, pointerType: ptype, clientX: b.left + x, clientY: b.top + y, bubbles: true, cancelable: true,
+        pressure: 0.5, buttons: type === 'pointerup' ? 0 : 1, button: 0, isPrimary: true }));
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      const out = [];
+      for (const palmDrift of [0, 40]) {
+        const n0 = e.strokes.length;
+        ev('pointerdown', 51, 'touch', 700, 600);
+        await wait(50);
+        for (let i = 1; i <= 4; i++) ev('pointermove', 51, 'touch', 700, 600 - palmDrift * i / 4); // 펜 전에 손바닥이 끌림
+        const tyPen = e.ty;
+        ev('pointerdown', 52, 'pen', 300, 300);
+        for (let i = 1; i <= 10; i++) { ev('pointermove', 52, 'pen', 300 + i * 15, 300 + i * 3); ev('pointermove', 51, 'touch', 700, 600 - palmDrift - i * 8); }
+        ev('pointerup', 52, 'pen', 450, 330);
+        ev('pointermove', 51, 'touch', 700, 400);
+        ev('pointerup', 51, 'touch', 700, 400);
+        out.push({ palmDrift, added: e.strokes.length - n0, pts: e.strokes[e.strokes.length - 1].points.length, movedAfterPen: e.ty - tyPen, gesture: !!e.gesture, drawing: !!e.drawing });
+        await wait(700);
+      }
+      return out;
+    });
+    for (const p of palm) {
+      assert(p.added === 1 && p.pts >= 8, `손바닥(끌림 ${p.palmDrift}px) 뒤 펜 획이 남음 (${JSON.stringify(p)})`);
+      assert(p.movedAfterPen === 0, `펜이 닿은 뒤 손바닥으로 화면이 움직이지 않음 (${p.movedAfterPen}px)`);
+      assert(!p.gesture && !p.drawing, '입력 상태 정리');
+    }
+
+    // 2) 올가미 + 손가락 탭 → 누른 객체(표) 선택, 빈 곳 탭 → 선택 해제
+    await page.evaluate(() => { const e = window.__engine; e.addTable({ rows: 2, cols: 2 }); e.clearSelection(); });
+    await tid('tool-lasso').click();
+    await settle();
+    let t = await tableCenter();
+    await fingerTap(t.c);
+    await until(async () => /표 고치기/.test(await tid('edit-object').textContent().catch(() => '')), '손가락 탭으로 표 선택');
+    assert((await st()).sel === 1, '하나 선택');
+
+    // 3) 선택 안에서 손가락으로 끌면 옮겨진다(화면은 그대로), 실행 취소 한 번에 돌아온다
+    let s0 = await st();
+    await fingerDrag(t.c, [t.c[0] + 60, t.c[1] + 45]);
+    let s1 = await st();
+    const t1 = await tableCenter();
+    const dx = t1.pts[0][0] - t.pts[0][0], dy = t1.pts[0][1] - t.pts[0][1];
+    assert(Math.abs(dx - 60 / s0.scale) < 1 && Math.abs(dy - 45 / s0.scale) < 1, `표가 손가락만큼 옮겨짐 (${dx.toFixed(1)}, ${dy.toFixed(1)})`);
+    assert(s1.tx === s0.tx && s1.ty === s0.ty, '옮기는 동안 화면은 그대로');
+    assert(s1.undo === s0.undo + 1 && s1.sel === 1, '실행 취소 한 단계, 선택 유지');
+    await tid('undo').click();
+    assert(samePts((await tableCenter()).pts, t.pts), '실행 취소 → 제자리');
+
+    // 4) 선택 밖에서 끌면 화면 넘기기(표는 그대로), 빈 곳 탭 → 선택 해제
+    t = await tableCenter();
+    s0 = await st();
+    const empty = [t.c[0], t.c[1] + 220];
+    await fingerDrag(empty, [empty[0], empty[1] - 80]);
+    s1 = await st();
+    assert(Math.abs((s1.ty - s0.ty) + 80) < 1 && s1.tx === s0.tx, `선택 밖 끌기 = 화면 넘기기 (${(s1.ty - s0.ty).toFixed(1)})`);
+    assert(samePts((await tableCenter()).pts, t.pts), '표는 그대로');
+    await page.evaluate(() => window.__engine.fitWidth());
+    t = await tableCenter();
+    await fingerTap([t.c[0], t.c[1] + 220]);
+    assert((await st()).sel === 0, '빈 곳 탭 → 선택 해제');
+
+    // 5) 글상자 도구 + 손가락 탭 → 글상자가 열린다
+    await tid('tool-text').click();
+    await fingerTap([t.c[0], t.c[1] + 220]);
+    await page.locator('textarea.hd-text-input').waitFor({ state: 'visible', timeout: 3000 });
+    await page.keyboard.type('손가락 글상자');
+    await tid('tool-pen').click(); // 확정
+    assert(await page.evaluate(() => window.__engine.strokes.some((s) => s.tool === 'text' && s.text === '손가락 글상자')), '손가락으로 연 글상자에 쓴 글');
+
+    // 6) 두 손가락 핀치 → 확대 (그리지 않음)
+    s0 = await st();
+    const [cx, cy] = t.c;
+    await T('touchStart', [{ x: cx - 60, y: cy + 120, id: 0 }]);
+    await T('touchStart', [{ x: cx - 60, y: cy + 120, id: 0 }, { x: cx + 60, y: cy + 120, id: 1 }]);
+    for (let i = 1; i <= 10; i++) await T('touchMove', [{ x: cx - 60 - i * 10, y: cy + 120, id: 0 }, { x: cx + 60 + i * 10, y: cy + 120, id: 1 }]);
+    await T('touchEnd', []);
+    s1 = await st();
+    assert(s1.scale > s0.scale * 1.5 && s1.n === s0.n, `핀치 확대 (${s0.scale.toFixed(2)} → ${s1.scale.toFixed(2)}), 획 없음`);
+    await page.evaluate(() => window.__engine.fitWidth());
+    await cdp.detach();
+    await waitSaved();
+    await shot('10-finger-input');
+  });
+
   await check('오프라인 작성 기한 만료 → 편집 잠금, 기록은 보존', async () => {
     await admin('/config', { tokenTtlMs: 8000 });
     await tid('back').click();
