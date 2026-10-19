@@ -21,13 +21,15 @@ Goono-ELN 서버 구현의 기준이며, 개발·테스트용 구현은 `app/moc
 ## 공통
 
 - 기본 경로: `{서버}/api/app/v1`
-- 인증: `Authorization: Bearer {기기 토큰}` (기기 등록 제외). 웹 로그인 세션과 **분리**한다 —
+- 인증: `Authorization: Bearer {기기 토큰}` (연결 `/devices/pair`·기기 등록 `/devices/register` 제외). 웹 로그인 세션과 **분리**한다 —
   웹의 동시 세션 1개 제한(`maximumSessions(1)`)에 걸리지 않게 별도 필터 체인으로 처리.
 - 오류 본문: `{ "error": { "code": "…", "message": "…" } }`
 - 기관이 태블릿 연결을 꺼 두었으면(`app.device.enabled=false`) **모든 `/api/app/v1` 요청**이 403 `APP_DISABLED`일 수
-  있다(연결·갱신·동기화 모두). 앱은 이 코드를 받으면 연결 안내 문구를 보여 준다.
+  있다(연결·갱신·동기화 모두). 앱은 이 코드를 받으면 연결 안내 문구를 보여 준다. 동기화 중이면 그 자리에서 멈추고
+  올리지 않은 버전은 대기 그대로 둔다(미반영으로 돌리지 않는다).
 - 시각: ISO-8601 (UTC). 서버 시각이 기준이며 기기 시각은 참고 값으로만 저장한다.
-- CORS: 앱 웹뷰 오리진 `capacitor://localhost`(iOS), `https://localhost`(Android)를 허용한다.
+- CORS: 앱 웹뷰 오리진 `capacitor://localhost`(iOS), `https://localhost`(Android)를 허용한다. 앱이 429의 `Retry-After`를
+  읽을 수 있게 `Access-Control-Expose-Headers: Retry-After`를 보낸다.
 
 ## 0. 연결(QR) — 기본 경로
 
@@ -56,7 +58,8 @@ Goono-ELN 서버 구현의 기준이며, 개발·테스트용 구현은 `app/moc
 - **QR 내용**: `goono-note://pair?server=<https URL>&code=<XXXX-XXXX>` (두 값 모두 URL 인코딩).
   앱은 scheme이 `goono-note`·host가 `pair`가 아니거나, `server`가 https가 아니거나(개발 빌드만 http 허용),
   `code`가 정규화 후 8자가 아니면 연결을 시도하지 않고 거부한다.
-  `server`는 서버가 설정으로 가진 공개 기본 URL(예: `app.public-base-url`)이며, 요청의 `Host` 헤더에서 만들지 않는다.
+  `server`는 서버 설정 `app.base-url` 값이다. 설정이 비어 있으면 서버는 이 요청의 URL(scheme + host + context path)로
+  만들고 경고 로그를 남긴다.
 - 기관이 태블릿 연결을 꺼 두었으면(`app.device.enabled=false`) 이 API는 403 `APP_DISABLED`로 거부한다(웹은 메뉴를 숨긴다).
 
 ### 0.2 연결 `POST /devices/pair`
@@ -80,25 +83,27 @@ Goono-ELN 서버 구현의 기준이며, 개발·테스트용 구현은 `app/moc
 
 | 상태 | 코드 | 의미 |
 |---|---|---|
-| 401 | `INVALID_PAIRING_CODE` | 코드가 없거나 만료되었거나 이미 사용됨(무효화된 코드 포함). 이유는 구분해 알려 주지 않는다 |
+| 400 | `BAD_REQUEST` | 요청 형식 오류(`device.id` 없음 등). 실패 횟수에 넣지 않는다 |
+| 401 | `INVALID_PAIRING_CODE` | 코드가 없거나 만료되었거나 이미 사용됨(무효화된 코드 포함). `pairingCode`가 비었거나 형식이 틀린 값(8자가 아님 등)도 400이 아니라 이 오류이며 **실패 1회로 센다**. 이유는 구분해 알려 주지 않는다 |
 | 403 | `APP_DISABLED` | 기관이 태블릿 연결을 끔 |
-| 403 | `DEVICE_NOT_ALLOWED` | 이 기기는 연결할 수 없음(기관 정책). 이때 코드는 소비하지 않는다 |
+| 403 | `DEVICE_NOT_ALLOWED` | **예약** — 이 기기는 연결할 수 없음(기관 정책). 이때 코드는 소비하지 않는다. 구노 서버는 아직 보내지 않는다(이번 단계에는 기기 차단 목록이 없다. 모의 서버만 `blockedDeviceIds`로 흉내 낸다) |
 | 429 | `TOO_MANY_ATTEMPTS` | 실패가 너무 많음. `Retry-After` 헤더(초)가 풀릴 때까지의 시간 |
 
-- **평가 순서**: 403 `APP_DISABLED` → 400(요청 형식 오류) → 429 `TOO_MANY_ATTEMPTS` → 401 `INVALID_PAIRING_CODE`
-  → 403 `DEVICE_NOT_ALLOWED` → 200(코드 소비 + 기기 묶음 upsert + 토큰 발급).
+- **평가 순서**: 403 `APP_DISABLED` → 400 `BAD_REQUEST`(요청 형식 오류) → 429 `TOO_MANY_ATTEMPTS` → 401 `INVALID_PAIRING_CODE`
+  → 403 `DEVICE_NOT_ALLOWED`(예약) → 200(코드 소비 + 기기 묶음 upsert + 토큰 발급).
 - **연결 실패 제한**: **같은 IP에서 10분 안에 5번 실패하면 429.** 실패는 `INVALID_PAIRING_CODE`와 §1 `/devices/register`의
   `INVALID_CREDENTIALS`이며, 두 엔드포인트가 **같은 IP별 횟수를 공유**한다(설계 §7.1). 막혀 있는 동안은 맞는 코드도 429이고, 429 응답 자체는 실패 횟수를 늘리지 않는다. `Retry-After`는
   가장 오래된 실패가 10분 창에서 빠질 때까지 남은 초다. (틀린 코드는 어느 코드의 시도인지 알 수 없으므로
   코드 단위가 아니라 IP 단위로 제한한다 — 설계 §7.1이 정한 "틀린 시도 5회면 폐기"의 구현 방식.)
-- **클라이언트 IP**: 실제 클라이언트 주소를 쓴다. 서버는 nginx 같은 리버스 프록시 뒤에 있으므로 `X-Forwarded-For`/`X-Real-IP`는
-  **신뢰하는 프록시가 설정한 경우에만** 읽고(그 밖의 요청이 보낸 값은 무시), 서버 인스턴스가 여러 개면 실패 횟수를 공유 저장소에 둔다.
+- **클라이언트 IP**: 직접 연결한 상대(peer)가 같은 서버의 리버스 프록시(루프백 주소)일 때만 `X-Real-IP` 또는
+  `X-Forwarded-For`의 첫 값을 쓰고, 그 밖에는 peer 주소를 쓴다(다른 곳에서 보낸 이 헤더는 무시).
+  실패 횟수는 서버 인스턴스의 메모리에 둔다 — 인스턴스가 여러 개인 기관은 인스턴스마다 따로 센다.
 - **기기 묶음**: 서버의 기기 기록은 **(기기 ID, 사용자)** 단위. 같은 사용자가 같은 기기를 다시 연결하면 토큰만 새로 발급. 다른 사용자가 같은 기기를 연결하면 새 묶음이 생기고, 이전 사용자의 "기기에서 작성 중" 노트는 웹에서 편집권 회수로 정리한다.
   따라서 노트의 편집권(`editLocation.deviceId`)은 **그 노트의 주인 + 그 기기**에게만 있다. 같은 기기를 다른
   사용자가 연결해도 남의 노트를 올리거나 반납할 수 없다 — 노트 주인이 토큰의 사용자가 아니면 404 `NOT_FOUND`
   (남의 노트는 있는지도 알려 주지 않는다). 409 `NOT_EDIT_OWNER`는 내 노트인데 편집 위치가 이 (기기, 사용자) 묶음이 아닐 때다.
 - **다시 연결**: 토큰 만료(`TOKEN_EXPIRED`)·기기 사용 중지(`DEVICE_REVOKED`) 모두 앱의 "다시 연결" 버튼으로
-  새 QR을 읽는다. 같은 사용자가 같은 기기를 다시 연결하면 그 묶음의 이전 토큰은 즉시 무효가 되고(새 토큰만 유효), 사용 중지된 묶음이면 사용 중지도 풀린다.
+  새 QR을 읽는다. 같은 사용자가 같은 기기를 다시 연결하면 그 묶음의 이전 토큰은 즉시 무효가 되고(새 토큰만 유효), 사용 중지된 묶음이면 사용 중지도 풀린다(사용 중지한 기기도 새 QR로 다시 연결하면 다시 사용 상태가 된다).
   같은 계정이면 앱은 기기 데이터를 이어 쓰고, 다른 계정이면 올리지 않은 기록이 있는 한 거부한다(앱 규칙).
 
 ## 1. 기기 등록 `POST /devices/register` (보조 경로)
@@ -122,17 +127,17 @@ Goono-ELN 서버 구현의 기준이며, 개발·테스트용 구현은 `app/moc
   "serverTime": "…"
 }
 ```
-오류: 401 `INVALID_CREDENTIALS`, 403 `PASSWORD_LOGIN_DISABLED`, 403 `DEVICE_NOT_ALLOWED`,
-429 `TOO_MANY_ATTEMPTS`(+ `Retry-After` 초)
+오류: 400 `BAD_REQUEST`(요청 형식 오류 — `device.id` 없음 등), 401 `INVALID_CREDENTIALS`, 403 `APP_DISABLED`, 403 `PASSWORD_LOGIN_DISABLED`,
+403 `DEVICE_NOT_ALLOWED`(예약 — §0.2), 429 `TOO_MANY_ATTEMPTS`(+ `Retry-After` 초)
 
-평가 순서: 403 `APP_DISABLED` → 403 `PASSWORD_LOGIN_DISABLED` → 400 → 429 → 401 `INVALID_CREDENTIALS` → 403 `DEVICE_NOT_ALLOWED` → 200.
+평가 순서: 403 `APP_DISABLED` → 403 `PASSWORD_LOGIN_DISABLED` → 400 `BAD_REQUEST` → 429 → 401 `INVALID_CREDENTIALS` → 403 `DEVICE_NOT_ALLOWED`(예약) → 200.
 `INVALID_CREDENTIALS`는 §0.2의 IP별 실패 횟수(5회/10분)에 **같은 통에 합산**되고, 막히면 `/devices/pair`와 `/devices/register` 모두 429다.
 기기 묶음 규칙은 §0.2와 같다.
 
 ## 2. 토큰 갱신 `POST /devices/refresh`
 
 온라인일 때마다 호출해 기한을 연장한다. 응답은 등록과 같은 형식(user 제외).
-오류: 401 `TOKEN_EXPIRED`(재로그인), 401 `DEVICE_REVOKED`(분실 등으로 폐기됨 — 앱은 편집을 잠근다)
+오류: 401 `TOKEN_EXPIRED`(다시 연결), 401 `DEVICE_REVOKED`(분실 등으로 폐기됨 — 앱은 편집을 잠근다)
 
 ## 3. 기준 정보 `GET /bootstrap`
 
@@ -221,6 +226,7 @@ Goono-ELN 서버 구현의 기준이며, 개발·테스트용 구현은 `app/moc
 | 신규 `PL_APP_DEVICE` | `DEVICE_MNO`(PK, 대리키), `DEVICE_ID`, `USER_MNO`, `NAME`, `PLATFORM`, `MODEL`, `APP_VERSION`, `TOKEN_HASH`, `TOKEN_EXPIRES_DT`, `REVOKED_YN`, `LAST_SEEN_DT`, `UNIQUE(DEVICE_ID, USER_MNO)` | 기기. 같은 물리 기기를 다른 사용자가 연결하면 행이 하나 더 생긴다 |
 | 신규 `PL_APP_PAIRING_CODE` | `CODE_HASH`(PK, 정규화한 코드의 해시), `USER_MNO`, `EXPIRES_DT`, `USED_DT`, `CREATE_DT` | 연결 코드(일회용·5분). 새 코드 발급 시 같은 `USER_MNO`의 `USED_DT IS NULL` 행은 `EXPIRES_DT`를 현재로 당겨 무효화. 만료·사용된 행은 주기적으로 삭제. 발급 시 `CODE_HASH`가 중복(PK 충돌)되면 코드를 다시 생성한다 |
 
-연결 실패 횟수(IP 단위 5회/10분, `/devices/pair`·`/devices/register` 공유)는 DB에 두지 않아도 되지만, 서버 인스턴스가 여러 개면
-공유 저장소(Redis 등)에 둔다.
-서버 설정: `app.device.enabled`(기관의 태블릿 연결 사용 여부), `app.device.password-login.enabled`(기본 꺼짐).
+연결 실패 횟수(IP 단위 5회/10분, `/devices/pair`·`/devices/register` 공유)는 DB에 두지 않고 서버 인스턴스의 메모리에 둔다
+(인스턴스가 여러 개면 인스턴스마다 따로 센다 — §0.2).
+서버 설정: `app.base-url`(QR의 `server` 값 — 비면 요청 URL로 만들고 경고 로그), `app.device.enabled`(기관의 태블릿 연결 사용 여부),
+`app.device.password-login.enabled`(기본 꺼짐).
