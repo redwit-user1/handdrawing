@@ -57,6 +57,8 @@ class DrawingEngine {
     this.lassoPath = null;        // 진행 중인 올가미 경로 (월드 좌표)
 
     this._imgCache = new Map();   // 이미지 획의 src → HTMLImageElement
+    this._rotating = new WeakSet(); // 돌리는 중인 사진 (두 번 누름 막기)
+    this._rotations = new Map();    // 이 세션에서 돌려 만든 그림 src → { orig, turns } (원본에서 다시 돌려 화질 유지)
 
     // 페이지 모드 — null 이면 무한 캔버스(기존 동작)
     this.layout = null;           // { type: 'pages', pageW, pageH, gap, header? }
@@ -419,13 +421,14 @@ class DrawingEngine {
   }
 
   /**
-   * 페이지 모드: strokes 를 한 덩어리로 보고 페이지 밖으로 걸쳤으면 페이지 본문 안으로 옮긴다 (기록 없이 제자리에서).
-   * 페이지보다 큰 덩어리는 그대로 둔다. 옮긴 거리 {dx, dy}
+   * 페이지 모드: strokes 중 하나라도 페이지 밖으로 걸쳐(페이지 그림에서 잘림) 있으면, strokes 를 한 덩어리로 보고
+   * 페이지 본문 안으로 옮긴다 (기록 없이 제자리에서). 잘리는 것이 없으면 그대로 — 두 페이지에 걸쳐 고른 필기를
+   * 조금 옮겨도 한 페이지로 몰리지 않는다. 페이지보다 큰 방향은 그대로 둔다. 옮긴 거리 {dx, dy}
    */
   _snapIntoPage(strokes) {
     if (!this.layout || !strokes.length) return { dx: 0, dy: 0 };
+    if (!strokes.some((s) => boxCrossesPage(this.layout, this._inkBox([s])))) return { dx: 0, dy: 0 };
     const b = this._inkBox(strokes);
-    if (b.w > this.layout.pageW || b.h > this.layout.pageH) return { dx: 0, dy: 0 };
     const { dx, dy } = snapBoxIntoPage(this.layout, b);
     if (dx || dy) for (const s of strokes) translateStroke(s, dx, dy);
     return { dx, dy };
@@ -727,32 +730,50 @@ class DrawingEngine {
 
   /**
    * 사진을 시계 방향으로 90° 돌린다 — 돌린 그림을 새 데이터(data URL)로 만들어 넣는다(저장 형식은 그대로).
-   * 가운데를 지키고 폭·높이를 바꾼 뒤 본문에 맞추고 페이지 안으로. 실행 취소 한 단계. 성공하면 true
+   * 가운데를 지키고 폭·높이를 바꾼 뒤 본문에 맞추고 페이지 안으로. 실행 취소 한 단계.
+   * 결과: true 돌림, false 돌릴 수 없음(그림을 읽지 못함·다른 출처), null 무시(같은 사진을 돌리는 중·그 사이 바뀜)
+   *
+   * JPEG 를 거듭 돌려도 화질이 떨어지지 않게, 이 세션에서 돌려 만든 그림은 원본과 돌린 횟수를 기억해
+   * 늘 원본에서 (횟수 + 1) 만큼 돌린다 — 네 번 돌리면 원본 데이터 그대로.
    */
   async rotateImage(stroke) {
     if (this.readonly || !stroke || stroke.tool !== 'image' || !this.strokes.includes(stroke)) return false;
-    const img = this._getImage(stroke.src);
-    if (!img.complete) {
-      await new Promise((res) => { img.addEventListener('load', res, { once: true }); img.addEventListener('error', res, { once: true }); });
+    if (this._rotating.has(stroke)) return null; // 두 번 누름 — 앞의 돌리기가 끝나기 전
+    this._rotating.add(stroke);
+    try { return await this._rotateImage(stroke); } finally { this._rotating.delete(stroke); }
+  }
+
+  async _rotateImage(stroke) {
+    const src0 = stroke.src;
+    const rot = this._rotations.get(src0) || { orig: src0, turns: 0 };
+    const turns = (rot.turns + 1) % 4;
+    let src = rot.orig;
+    if (turns !== 0) {
+      const img = this._getImage(rot.orig);
+      if (!img.complete) {
+        await new Promise((res) => { img.addEventListener('load', res, { once: true }); img.addEventListener('error', res, { once: true }); });
+      }
+      if (!img.naturalWidth) return false;
+      const nw = img.naturalWidth, nh = img.naturalHeight, odd = turns % 2 === 1;
+      const c = document.createElement('canvas');
+      c.width = odd ? nh : nw;
+      c.height = odd ? nw : nh;
+      const cx = c.getContext('2d');
+      const jpeg = /^data:image\/jpe?g/i.test(rot.orig);
+      if (jpeg) { cx.fillStyle = '#ffffff'; cx.fillRect(0, 0, c.width, c.height); }
+      cx.translate(c.width / 2, c.height / 2);
+      cx.rotate((turns * Math.PI) / 2);
+      cx.drawImage(img, -nw / 2, -nh / 2);
+      try { src = jpeg ? c.toDataURL('image/jpeg', 0.92) : c.toDataURL('image/png'); } catch (_) { return false; } // 다른 출처 그림
+      this._rotations.set(src, { orig: rot.orig, turns });
     }
-    if (!img.naturalWidth) return false;
-    const c = document.createElement('canvas');
-    c.width = img.naturalHeight;
-    c.height = img.naturalWidth;
-    const cx = c.getContext('2d');
-    const jpeg = /^data:image\/jpe?g/i.test(stroke.src);
-    if (jpeg) { cx.fillStyle = '#ffffff'; cx.fillRect(0, 0, c.width, c.height); }
-    cx.translate(c.width, 0);
-    cx.rotate(Math.PI / 2);
-    cx.drawImage(img, 0, 0);
-    let src;
-    try { src = jpeg ? c.toDataURL('image/jpeg', 0.92) : c.toDataURL('image/png'); } catch (_) { return false; } // 다른 출처 그림
     // 새 그림을 먼저 읽어 두어 바꾸는 순간 깜박이지 않게
-    const next = new Image();
-    next.src = src;
-    try { await next.decode(); } catch (_) {}
+    const next = this._imgCache.get(src) || new Image();
+    if (!next.src) next.src = src;
+    if (!(next.complete && next.naturalWidth)) { try { await next.decode(); } catch (_) {} }
     this._imgCache.set(src, next);
-    if (this.readonly || !this.strokes.includes(stroke)) return false;
+    // 기다리는 사이 실행 취소·다른 고치기로 그림이 바뀌었으면 손대지 않는다
+    if (this.readonly || !this.strokes.includes(stroke) || stroke.src !== src0) return null;
     const before = snapshotStroke(stroke);
     let b = rotateBox90(objectBox(stroke));
     if (this.layout) {
@@ -2356,6 +2377,12 @@ function snapBoxIntoPage(layout, b) {
   return { dx: round2(nx - b.x), dy: round2(ny - b.y), page };
 }
 
+/** 상자가 한 페이지 안에 다 들어 있지 않다 (페이지 그림에서 잘리거나 빠진다) */
+function boxCrossesPage(layout, b) {
+  const i = pageIndexOfBox(layout, b), top = i * (layout.pageH + layout.gap);
+  return b.x < 0 || b.x + b.w > layout.pageW || b.y < top || b.y + b.h > top + layout.pageH;
+}
+
 /**
  * 새 그림의 크기 (페이지 모드). 사진은 본문 폭의 60%(원본보다 키우지 않음), 수식·구조식 같은 삽입 객체(kind)는
  * 만든 크기 그대로 — 둘 다 본문(폭·높이) 안에 들어가게 줄인다. 화면 확대 배율과 상관없다.
@@ -2604,7 +2631,7 @@ if (typeof window !== 'undefined') {
     DrawingEngine, defaultPageLayout, normalizePageLayout, A4_BODY_ASPECT, PAPERS, PAPER_DEFAULT, paperSpec,
     input: { fingerDownAction, fingerOutcome, isPalmSuspect, touchIntent, TOUCH_TAP_SLOP, TOUCH_TAP_MS, PEN_GUARD_MS, PALM_CONTACT_PX },
     geom: {
-      pageBodyRect, pageIndexOfBox, snapBoxIntoPage, initialImageSize, fitSize, boxCorners, handleAt, resizeBox, rotateBox90,
+      pageBodyRect, pageIndexOfBox, boxCrossesPage, snapBoxIntoPage, initialImageSize, fitSize, boxCorners, handleAt, resizeBox, rotateBox90,
       PAGE_HEADER_H, PAGE_BODY_MX, PAGE_BODY_MY, PHOTO_PAGE_FRAC, HANDLE_DOT_PX, HANDLE_HIT_PX,
     },
   };

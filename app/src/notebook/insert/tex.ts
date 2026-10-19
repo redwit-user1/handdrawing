@@ -9,6 +9,7 @@ import { SVG } from 'mathjax-full/js/output/svg.js';
 import { liteAdaptor } from 'mathjax-full/js/adaptors/liteAdaptor.js';
 import { RegisterHTMLHandler } from 'mathjax-full/js/handlers/html.js';
 import { AllPackages } from 'mathjax-full/js/input/tex/AllPackages.js';
+import { TEX_OVERSAMPLE } from '../objectScale.ts';
 
 const adaptor = liteAdaptor();
 RegisterHTMLHandler(adaptor);
@@ -24,8 +25,8 @@ const doc = mathjax.document('', {
 /** 페이지 글자 크기(월드 단위) 기준 — 글상자(18)보다 조금 크게 */
 export const MATH_FONT = 22;
 const EX = MATH_FONT * 0.44;
-/** 확대·고해상도 내보내기에서도 선명하도록 그림 고유 크기를 3배로 */
-const OVERSAMPLE = 3;
+/** 확대·고해상도 내보내기에서도 선명하도록 그림 고유 크기를 3배로 (다시 고칠 때 크기 계산과 같은 값) */
+const OVERSAMPLE = TEX_OVERSAMPLE;
 
 export interface TexImage { src: string; w: number; h: number; svg: string }
 

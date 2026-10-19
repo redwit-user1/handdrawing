@@ -425,6 +425,7 @@ try {
     // 수식 (LaTeX 직접)
     await ins('math');
     await tid('formula-dialog').waitFor();
+    await tid('math-input').waitFor(); // 수식 입력기가 준비된 뒤에 LaTeX 칸을 쓴다 (입력기 자동 포커스와 겹치지 않게)
     await page.locator('.tex-source summary').click();
     await tid('tex-source').fill('x=\\frac{-b\\pm\\sqrt{b^2-4ac}}{2a}');
     await until(async () => (await tid('formula-preview').locator('img').count()) === 1, '수식 미리보기');
@@ -889,6 +890,7 @@ try {
     assert(s1.tx === s0.tx && s1.ty === s0.ty && s1.undo === s0.undo + 1, `화면 그대로, 실행 취소 한 단계 (${s0.undo}→${s1.undo})`);
 
     // 6) 90° 회전: 폭·높이가 바뀌고, 돌린 그림 데이터로 그려진다 (실행 취소 한 단계)
+    await E((e) => { window.__origPhoto = e.strokes.filter((x) => x.tool === 'image').pop().src; });
     s0 = await st();
     await tid('sel-rotate').click();
     await until(async () => (await box()).src !== c2.src, '돌린 그림');
@@ -907,6 +909,39 @@ try {
     // 1200×800 → 800×1200, 위쪽 흰 표시가 오른쪽으로 (시계 방향)
     assert(rotated.jpeg && rotated.w === 800 && rotated.h === 1200 && rotated.right.every((v) => v > 200) && rotated.left[2] > 150, `돌린 그림 픽셀 (${JSON.stringify(rotated)})`);
     await shot('11-rotated-photo');
+
+    // 6-1) 두 번 눌러도 한 번(90°)만 돌고 실행 취소도 한 단계, 돌리는 사이 실행 취소하면 손대지 않음,
+    //      돌린 그림은 원본에서 다시 돌려 네 바퀴째엔 원본 데이터 그대로 (화질 손실 누적 없음). 상자 비율 = 그림 비율
+    const rr = await E(async (e) => {
+      const s = e.strokes.filter((x) => x.tool === 'image').pop();
+      const shape = async () => {
+        const img = e._getImage(s.src);
+        if (!img.complete) await new Promise((r) => img.addEventListener('load', r, { once: true }));
+        const [[a, b], [c, d]] = s.points;
+        return { w: c - a, h: d - b, nw: img.naturalWidth, nh: img.naturalHeight, ratioOk: Math.abs((c - a) / (d - b) - img.naturalWidth / img.naturalHeight) < 0.01 };
+      };
+      const out = { start: await shape(), u0: e.undoStack.length };
+      out.double = await Promise.all([e.rotateImage(s), e.rotateImage(s)]);
+      out.afterDouble = await shape();
+      out.u1 = e.undoStack.length;
+      const srcBefore = s.src;
+      const p = e.rotateImage(s);
+      e.undo(); // 돌리는 사이 실행 취소 → 앞의 돌리기를 되돌림
+      out.duringUndo = await p;
+      out.afterUndo = await shape();
+      out.u2 = e.undoStack.length;
+      out.undoRestored = s.src !== srcBefore;
+      for (let i = 0; i < 3; i++) out[`r${i}`] = await e.rotateImage(s);
+      out.end = await shape();
+      out.backToOriginal = s.src === window.__origPhoto;
+      e.selectObject(s); // 실행 취소가 선택을 풀었다
+      return out;
+    });
+    const R = rr;
+    assert(R.double[0] === true && R.double[1] === null && R.u1 === R.u0 + 1, `두 번 눌러도 한 번 (${JSON.stringify(R.double)}, undo ${R.u0}→${R.u1})`);
+    assert(Math.abs(R.afterDouble.w - R.start.h) < 0.02 && Math.abs(R.afterDouble.h - R.start.w) < 0.02 && R.afterDouble.ratioOk, `90° 한 번, 비율 그대로 (${JSON.stringify(R.afterDouble)})`);
+    assert(R.duringUndo === null && R.undoRestored && R.afterUndo.ratioOk && R.u2 === R.u0, `돌리는 사이 실행 취소 → 손대지 않음 (${JSON.stringify(R.afterUndo)})`);
+    assert(R.r0 && R.r1 && R.r2 && R.backToOriginal && R.end.ratioOk && R.end.nw === 1200, `네 바퀴째 원본 데이터 (${JSON.stringify(R.end)})`);
 
     // 7) 펜으로 1쪽 오른쪽 아래 밖으로 끌기(대부분 1쪽) → 본문 오른쪽 아래 안으로, 그 자리에서 복제해도 페이지 안
     await E((e) => { e.fitWidth(); e.zoomBy(0.5, e.cssW / 2, 0); });

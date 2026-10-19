@@ -11,6 +11,7 @@ import TableDialog, { type TableValue } from '../notebook/insert/TableDialog.tsx
 import FormulaDialog, { type FormulaKind } from '../notebook/insert/FormulaDialog.tsx';
 import type { StructureResult } from '../notebook/insert/StructureSheet.tsx';
 import { placeSelectionBar } from '../notebook/selectionBar.ts';
+import { chemFit, userScale } from '../notebook/objectScale.ts';
 import { IcBack, IcCheck, IcCopy, IcEdit, IcHand, IcHistory, IcLock, IcPaper, IcRotate, IcSync, IcText, IcTrash } from '../icons.tsx';
 import { Boundary, Dialog, fmtDateTime, LockBanner } from '../ui.tsx';
 import Versions from './Versions.tsx';
@@ -417,13 +418,23 @@ export default function Note({ id, onBack, onOpen, onRelogin }: { id: string; on
     else if (k === 'chem') setInserting({ kind: 'chem', target: s as ImageObject });
   };
 
+  /** 사진 90° 돌리기 — 돌릴 수 없으면 알린다 (null = 앞의 돌리기 중이라 무시) */
+  const rotateSelected = async () => {
+    const e = engineRef.current;
+    if (!e || !selObj) return;
+    if ((await e.rotateImage(selObj)) === false) say('사진을 돌릴 수 없습니다.');
+  };
+
   /** 그림 객체 넣기 또는 (위치를 지킨 채) 바꾸기 */
   const placeImage = (target: ImageObject | undefined, src: string, w: number, h: number, extra: Partial<ImageObject>) => {
     const e = engineRef.current;
     if (!e) return;
     if (target) {
+      // 손잡이로 바꾼 크기를 지킨다 (처음 만든 크기 대비 배율을 새 그림에도)
+      const k = userScale(target);
       const [[x0, y0]] = target.points;
-      e.updateObject(target, { ...extra, src, points: [[x0, y0], [x0 + w, y0 + h]] });
+      const r2 = (n: number) => Math.round(n * 100) / 100;
+      e.updateObject(target, { ...extra, src, points: [[x0, y0], [r2(x0 + w * k), r2(y0 + h * k)]] });
       e.selectObject(target);
     } else {
       e.addImage(src, w, h, extra);
@@ -450,8 +461,8 @@ export default function Note({ id, onBack, onOpen, onRelogin }: { id: string; on
     setInserting(null);
     if (!st || st.kind !== 'chem') return;
     // 페이지에 알맞은 크기로 (폭 최대 360)
-    const k = Math.min(1, 360 / r.w, 280 / r.h);
-    placeImage(st.target, toBase64Svg(r.svg), Math.round(r.w * k), Math.round(r.h * k), { kind: 'chem', molfile: r.molfile, smiles: r.smiles });
+    const f = chemFit(r.w, r.h);
+    placeImage(st.target, toBase64Svg(r.svg), f.w, f.h, { kind: 'chem', molfile: r.molfile, smiles: r.smiles });
   };
 
   /** 노트 전체 종이 바꾸기 — 엔진이 실행 취소에 넣고 onChange 로 저장을 예약한다 */
@@ -570,7 +581,7 @@ export default function Note({ id, onBack, onOpen, onRelogin }: { id: string; on
               <button className="btn" onClick={editSelected} data-testid="edit-object"><IcEdit /> {objectName(selObj)} 고치기</button>
             )}
             {rotatable(selObj) && (
-              <button className="btn" onClick={() => { if (selObj) void engineRef.current?.rotateImage(selObj); }} data-testid="sel-rotate"><IcRotate /> 90° 회전</button>
+              <button className="btn" onClick={() => void rotateSelected()} data-testid="sel-rotate"><IcRotate /> 90° 회전</button>
             )}
             <button className="btn" onClick={() => engineRef.current?.duplicateSelection()} data-testid="sel-duplicate"><IcCopy /> 복제</button>
             <button className="btn danger" onClick={() => engineRef.current?.deleteSelection()} data-testid="sel-delete"><IcTrash /> 삭제</button>

@@ -60,7 +60,13 @@ export default function FormulaDialog({ kind, initial, onSubmit, onClose }: {
     if (el.value !== source) el.value = source;
     const onInput = () => setSource(el.value);
     el.addEventListener('input', onInput);
-    const t = setTimeout(() => el.focus(), 50);
+    // 입력기가 준비되면 포커스 — 그 사이 대화상자 안 다른 칸(LaTeX 직접 쓰기 등)을 쓰고 있으면 빼앗지 않는다
+    const t = setTimeout(() => {
+      const active = document.activeElement;
+      const dialog = el.closest('[role="dialog"]');
+      if (active && active !== document.body && active !== el && dialog?.contains(active)) return;
+      el.focus();
+    }, 50);
     return () => { el.removeEventListener('input', onInput); clearTimeout(t); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mlReady]);

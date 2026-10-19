@@ -143,3 +143,41 @@ test('선택 막대 자리: 선택 바로 위 → 자리 없으면 아래 → �
   // 선택이 화면 아래 밖 → 보이는 곳 아래쪽(아래 도구 막대 88 위)
   assert.deepEqual(placeSelectionBar({ x: 400, y: 2000, w: 200, h: 100 }, bar, view, { ...none, bottom: 88 }), { x: 350, y: 800 - 88 - 8 - 58 });
 });
+
+/* ── 리뷰 수정 1회차 ── */
+const proto = HD.DrawingEngine.prototype;
+const fakeEngine = { layout: L, _inkBox: proto._inkBox };
+const snap = (strokes) => proto._snapIntoPage.call(fakeEngine, strokes);
+const pen = (pts, size = 4) => ({ tool: 'pen', size, color: '#000', points: pts.map(([x, y]) => [x, y, 0.5]) });
+const img = (x, y, w, h) => ({ tool: 'image', size: 0, src: 'x', points: [[x, y], [x + w, y + h]] });
+
+test('두 페이지에 걸쳐 고른 필기를 조금 옮겨도(잘리는 것 없음) 한 페이지로 몰리지 않는다', () => {
+  // 1쪽 아래 필기 + 2쪽 위 필기 — 각각은 자기 페이지 안
+  const a = pen([[100, 1000], [200, 1020]]), b = pen([[100, STRIDE + 80], [220, STRIDE + 120]]);
+  assert.equal(G.boxCrossesPage(L, proto._inkBox([a])), false);
+  assert.equal(G.boxCrossesPage(L, proto._inkBox([b])), false);
+  const before = JSON.stringify([a, b]);
+  assert.deepEqual(snap([a, b]), { dx: 0, dy: 0 });
+  assert.equal(JSON.stringify([a, b]), before, '그대로');
+  // 복제처럼 24 옮긴 뒤에도 각각 페이지 안이면 그대로
+  for (const s of [a, b]) for (const p of s.points) { p[0] += 24; p[1] += 24; }
+  assert.deepEqual(snap([a, b]), { dx: 0, dy: 0 });
+});
+
+test('하나라도 페이지 밖으로 걸치면 덩어리째 맞춘다 / 페이지보다 큰 방향만 그대로(다른 방향은 맞춤)', () => {
+  const a = img(600, 300, 200, 100); // 오른쪽 끝을 넘음
+  const b = pen([[300, 320], [400, 330]]);
+  assert.deepEqual(snap([a, b]), { dx: -104, dy: 0 });
+  assert.equal(a.points[1][0], 696);
+  assert.equal(b.points[0][0], 196);
+  // 페이지보다 넓은 그림을 1쪽 아래 경계 너머로(대부분 2쪽) → 가로는 그대로, 세로는 2쪽 본문 맨 위로
+  const wide = img(-50, L.pageH - 30, 800, 200);
+  const r = snap([wide]);
+  assert.equal(r.dx, 0);
+  assert.equal(wide.points[0][1], STRIDE + 56);
+  // 두 페이지보다 큰 덩어리(세로)에 오른쪽으로 걸친 것이 있으면 가로만 맞춘다
+  const top = pen([[100, 100], [690, 110]]), bottom = img(650, STRIDE + 900, 100, 50);
+  const r2 = snap([top, bottom]);
+  assert.equal(r2.dy, 0);
+  assert.ok(r2.dx < 0 && bottom.points[1][0] <= 696 + 0.01);
+});
