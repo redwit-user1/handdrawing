@@ -59,6 +59,17 @@ async function check(name, fn) {
   } catch (e) {
     results.push({ step, name, ok: false, error: String(e?.message ?? e) });
     console.log(`  ✗ ${step}. ${name}\n      ${String(e?.message ?? e).split('\n')[0]}`);
+    // 진단: 페이지가 그리기(requestAnimationFrame)를 멈췄는지 — Playwright 의 '안정' 검사는 rAF 로 한다
+    const diag = await Promise.race([
+      page.evaluate(() => new Promise((r) => {
+        const t0 = performance.now();
+        requestAnimationFrame(() => r({ rafMs: Math.round(performance.now() - t0), vis: document.visibilityState, focus: document.hasFocus() }));
+        setTimeout(() => r({ rafMs: null, vis: document.visibilityState, focus: document.hasFocus() }), 2000);
+      })),
+      new Promise((r) => setTimeout(() => r({ evaluate: 'timeout' }), 4000)),
+    ]).catch((er) => ({ error: String(er) }));
+    console.log(`      진단: ${JSON.stringify(diag)}`);
+    results[results.length - 1].diag = diag;
     await page.screenshot({ path: path.join(out, `fail-${step}.png`) }).catch(() => {});
     throw e;
   }
@@ -1090,6 +1101,44 @@ try {
     await keyboard(0);
     await tid('tool-pen').click();
     assert(await E((e) => e.strokes.some((s) => s.tool === 'text' && /키보드 위 글상자$/.test(s.text))), '키보드 위에서 쓴 글상자');
+
+    // 키보드보다 긴 글상자(20줄)의 첫 줄을 고칠 때: 커서 줄이 보이는 채로 (글상자 아래에 맞춰 넘기지 않는다)
+    await E((e) => e.fitWidth());
+    await tid('tool-text').click();
+    await page.mouse.click(host.x + host.width / 2, host.y + 120);
+    await page.locator('textarea.hd-text-input').waitFor();
+    await page.keyboard.type('첫 줄');
+    for (let i = 2; i <= 20; i++) { await page.keyboard.press('Enter'); await page.keyboard.type(`${i}줄`); }
+    await keyboard(400);
+    await page.keyboard.press('Control+Home');
+    await page.keyboard.type('고침 ');
+    const caretSeen = await page.evaluate(() => {
+      const t = document.querySelector('textarea.hd-text-input'), r = t.getBoundingClientRect(), c = document.querySelector('[data-testid=board]').getBoundingClientRect();
+      const k = r.height / t.offsetHeight, firstLine = r.top + parseFloat(t.style.paddingTop) * k;
+      return { firstLine, lineH: parseFloat(t.style.fontSize) * 1.5 * k, boxH: r.height, visTop: c.top, kbTop: innerHeight - 400, start: t.selectionStart };
+    });
+    assert(caretSeen.boxH > caretSeen.kbTop - caretSeen.visTop, `글상자가 보이는 영역보다 김 (${JSON.stringify(caretSeen)})`);
+    assert(caretSeen.start === 3 && caretSeen.firstLine >= caretSeen.visTop && caretSeen.firstLine + caretSeen.lineH <= caretSeen.kbTop,
+      `첫 줄을 고치는 동안 커서 줄이 보임 (${JSON.stringify(caretSeen)})`);
+    await keyboard(0);
+    await tid('tool-pen').click();
+    assert(await E((e) => e.strokes.some((s) => s.tool === 'text' && /^고침 첫 줄\n2줄/.test(s.text))), '첫 줄을 고친 20줄 글상자');
+
+    // 수식 화면 키보드: 뜨면 --kb, 내리면 0, 키보드가 뜬 채로 대화상자를 닫아도 0
+    const kbVar = () => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--kb').trim());
+    await tid('tool-insert').click(); await tid('insert-math').click();
+    await tid('math-input').waitFor();
+    await page.evaluate(() => { document.querySelector('math-field').focus(); window.mathVirtualKeyboard.show(); });
+    await until(async () => parseFloat(await kbVar()) > 100, '수식 키보드 → --kb');
+    const mk = await page.evaluate(() => ({ kbTop: innerHeight - window.mathVirtualKeyboard.boundingRect.height, submit: document.querySelector('[data-testid=formula-submit]').getBoundingClientRect().bottom }));
+    assert(mk.submit <= mk.kbTop, `수식 키보드 위에 넣기 버튼 (${JSON.stringify(mk)})`);
+    await page.evaluate(() => window.mathVirtualKeyboard.hide());
+    await until(async () => (await kbVar()) === '0px', '수식 키보드 내림 → --kb 0');
+    await page.evaluate(() => window.mathVirtualKeyboard.show());
+    await until(async () => parseFloat(await kbVar()) > 100, '수식 키보드 다시');
+    await tid('formula-dialog').getByText('취소').click();
+    await tid('formula-dialog').waitFor({ state: 'detached' });
+    await until(async () => (await kbVar()) === '0px' && !(await page.evaluate(() => window.mathVirtualKeyboard.visible)), '키보드가 뜬 채로 닫아도 --kb 0');
 
     // 4) 지우개: 10 단위 떨어진 두 획 중 한 획 3 단위 옆 — 펜(8px)은 그 획만, 마우스(16px)는 예전처럼 둘 다
     await E((e) => e.fitWidth());

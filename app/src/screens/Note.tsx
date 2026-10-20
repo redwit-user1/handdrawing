@@ -252,6 +252,7 @@ export default function Note({ id, onBack, onOpen, onRelogin }: { id: string; on
       void (async () => {
         if (saveTimer.current) clearTimeout(saveTimer.current);
         engine.commitText();
+        engine.destroy(); // 창·visualViewport 리스너 떼기 (노트를 열 때마다 쌓이지 않게)
         if (dirtyRef.current && docRef.current && !readOnlyRef.current) {
           dirtyRef.current = false;
           await saveWorking(id, { ...docRef.current, layout: engine.layout ?? docRef.current.layout, strokes: engine.strokes });
@@ -510,7 +511,7 @@ export default function Note({ id, onBack, onOpen, onRelogin }: { id: string; on
         </div>
 
         <div className="pal-anchor status-anchor">
-          <button className={`status-pill${save.kind === 'error' ? ' danger' : ''}`} onClick={() => setStatusOpen((v) => !v)} aria-expanded={statusOpen}
+          <button className={`status-pill${save.kind === 'error' ? ' danger' : ''}${deadline.urgent && !lock ? ' urgent' : ''}`} onClick={() => setStatusOpen((v) => !v)} aria-expanded={statusOpen}
             data-testid="status-pill" data-online={online} data-pending={pending}>
             <span className={`dot ${online ? 'on' : 'off'}`} aria-hidden="true" />
             <span className="pill-label" data-testid="saved-state">{saveLabel}</span>

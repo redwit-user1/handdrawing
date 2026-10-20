@@ -468,7 +468,8 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .
   .note-bar .note-sub { display: none; }
   .note-bar .title-text { font-size: var(--fs-m); }
   .status-pill { padding: 0 12px; gap: 6px; }
-  .status-pill > :not(.dot):not(.pill-label):not(.pill-count) { display: none; }
+  /* 오프라인일 때의 여유 기한(회색)만 숨긴다 — 기한 임박 경고(.warn-text)와 "오프라인"은 남긴다 */
+  .status-pill > .muted { display: none; }
   .status-pop, .paper-pop {
     position: fixed; left: calc(12px + var(--safe-left)); right: calc(12px + var(--safe-right)); width: auto;
     top: calc(64px + var(--safe-top)); max-height: calc(100vh - 80px - var(--safe-top)); overflow: auto;
@@ -477,7 +478,12 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .
 @media (max-width: 420px) {
   /* 상태 알약은 점(온라인)과 올릴 버전 수만 — 저장 상태 글은 화면 읽기용으로 남긴다 */
   .status-pill { min-width: 44px; justify-content: center; padding: 0 10px; }
-  .status-pill .pill-label { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+  .status-pill .pill-label, .status-pill .pill-off, .status-pill .warn-text {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+  }
+  /* 글을 숨긴 대신 점으로: 기한 임박은 주황 점 + 테두리 */
+  .status-pill.urgent { border-color: var(--warn); }
+  .status-pill.urgent .dot { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); }
   .status-pill .pill-count { font-size: 12px; }
   .paper-pick { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

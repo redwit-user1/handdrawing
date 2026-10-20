@@ -7,7 +7,7 @@ import { compactLength, paletteLayout, PAL_FULL_PX, PAL_ORDER } from '../../src/
 globalThis.window = globalThis.window ?? {};
 await import('../../../js/engine.js');
 const { eraserRadiusFor, ERASER_PEN_PX, ERASER_PX } = globalThis.window.HandDrawing.input;
-const { textInputScale, revealDelta, fitScaleFor, anchorView, INPUT_MIN_FONT_PX } = globalThis.window.HandDrawing.view;
+const { textInputScale, revealDelta, revealTextDelta, fitScaleFor, anchorView, INPUT_MIN_FONT_PX } = globalThis.window.HandDrawing.view;
 
 test('지우개 반지름: 펜 8px, 손가락·마우스 16px(예전과 같다)', () => {
   assert.equal(ERASER_PEN_PX, 8);
@@ -27,13 +27,26 @@ test('글상자 입력칸: 화면 글자가 16px 미만이면 키워서 쓰고 �
   assert.equal(textInputScale(0), 1, '크기 0 은 그대로');
 });
 
-test('글상자 보이기: 아래가 가리면 올리고(커서 줄 우선), 위로 넘치면 내리고, 안이면 그대로', () => {
+test('상자 보이기(revealDelta): 아래가 가리면 올리고, 위로 넘치면 내리고, 안이면 그대로', () => {
   const vis = { top: 60, bottom: 500 };
   assert.equal(revealDelta({ top: 100, bottom: 200 }, vis), 0);
   assert.equal(revealDelta({ top: 450, bottom: 560 }, vis), 560 - (500 - 16), '키보드 위 16px 까지 올림');
   assert.equal(revealDelta({ top: 30, bottom: 120 }, vis), -(60 + 16 - 30), '위로 넘침 → 내림');
-  // 보이는 영역보다 큰 칸은 아래(커서)를 맞춘다
-  assert.equal(revealDelta({ top: 0, bottom: 900 }, vis), 900 - 484);
+});
+
+test('글상자 보이기: 보이는 영역에 들어가는 글상자는 전체를, 긴 글상자는 커서 줄만 본다', () => {
+  const vis = { top: 60, bottom: 430 }; // iPad 가로 + 키보드 ≈ 370px
+  // 짧은 글상자: 아래가 키보드에 가리면 글상자 전체가 보이게 (커서 위치와 무관)
+  assert.equal(revealTextDelta({ top: 350, bottom: 470 }, { top: 360, bottom: 390 }, vis), 470 - (430 - 16));
+  // 긴 글상자(20줄, 600px) 맨 위 줄을 고치는 중 — 커서 줄이 보이면 움직이지 않는다 (예전: 글상자 아래에 맞춰 커서가 화면 밖으로)
+  const tall = { top: 100, bottom: 700 };
+  assert.equal(revealTextDelta(tall, { top: 106, bottom: 133 }, vis), 0, '커서 보임 → 그대로, 글상자 위가 밀려 올라가지 않음');
+  // 긴 글상자 끝에서 쓰는 중(커서 = 글상자 아래) → 커서 줄이 키보드 위로 올 만큼만
+  assert.equal(revealTextDelta(tall, { top: 667, bottom: 700 }, vis), 700 - (430 - 16));
+  // 커서 줄이 위로 가려졌으면(위쪽 줄로 옮김) 그만큼만 내린다
+  assert.equal(revealTextDelta({ top: -300, bottom: 300 }, { top: -200, bottom: -173 }, vis), -200 - (60 + 16));
+  // 커서가 중간 줄이고 보이면 그대로
+  assert.equal(revealTextDelta(tall, { top: 300, bottom: 327 }, vis), 0);
 });
 
 test('폭 맞춤 배율: 여백을 뺀 폭에 페이지 폭, 최대 1.25·최소 minScale', () => {

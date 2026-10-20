@@ -32,7 +32,7 @@ export function keyboardInsets(s: ViewportSample): KeyboardInsets {
   return bottom >= KB_MIN_PX ? { top, bottom } : { top: 0, bottom: 0 };
 }
 
-type MathKeyboard = EventTarget & { visible?: boolean; boundingRect?: DOMRect };
+type MathKeyboard = EventTarget & { visible?: boolean; boundingRect?: DOMRect; hide?: (options?: { animate?: boolean }) => void };
 const mathKeyboard = () => (window as unknown as { mathVirtualKeyboard?: MathKeyboard }).mathVirtualKeyboard;
 
 let started = false;
@@ -57,7 +57,6 @@ export function updateKeyboardInsets() {
   const root = document.documentElement.style;
   root.setProperty('--kb', `${next.bottom}px`);
   root.setProperty('--kb-top', `${next.top}px`);
-  document.documentElement.toggleAttribute('data-kb', next.bottom > 0);
   // 키보드가 올라오면 대화상자 안에서 쓰는 칸이 보이도록 (대화상자 높이가 줄어 스크롤된다)
   if (opened) {
     requestAnimationFrame(() => {
@@ -85,4 +84,11 @@ export function watchMathKeyboard() {
   watchingMath = true;
   mk.addEventListener('geometrychange', updateKeyboardInsets);
   mk.addEventListener('virtual-keyboard-toggle', updateKeyboardInsets);
+}
+
+/** 수식 대화상자를 닫을 때 — 떠 있는 수식 화면 키보드를 내리고 가림 높이를 다시 잰다 */
+export function hideMathKeyboard() {
+  const mk = mathKeyboard();
+  if (mk?.visible) mk.hide?.({ animate: false });
+  updateKeyboardInsets();
 }

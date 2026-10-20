@@ -1,6 +1,6 @@
 import { createElement, useEffect, useMemo, useRef, useState } from 'react';
 import { Dialog } from '../../ui.tsx';
-import { watchMathKeyboard } from '../../lib/keyboard.ts';
+import { hideMathKeyboard, watchMathKeyboard } from '../../lib/keyboard.ts';
 import type { TexImage } from './tex.ts';
 
 /**
@@ -55,6 +55,8 @@ export default function FormulaDialog({ kind, initial, onSubmit, onClose }: {
 
   useEffect(() => { void loadTex().then(setTex); }, []);
   useEffect(() => { if (kind === 'math') void loadMathLive().then(() => setMlReady(true)); }, [kind]);
+  // 닫힐 때 수식 화면 키보드가 남아 대화상자 자리(--kb)를 계속 차지하지 않게
+  useEffect(() => () => { if (mathlivePromise) hideMathKeyboard(); }, []);
 
   // MathLive 입력칸 ↔ source
   useEffect(() => {

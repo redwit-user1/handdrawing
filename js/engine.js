@@ -180,8 +180,17 @@ class DrawingEngine {
     if (docW <= viewW) this.tx = I.left + (viewW - docW) / 2;
     else this.tx = Math.min(I.left + pad, Math.max(this.cssW - I.right - pad - docW, this.tx));
     const maxTy = I.top + pad;
-    const minTy = Math.min(maxTy, this.cssH - I.bottom - pad - docH);
+    // 글상자를 쓰는 중이면 화상 키보드가 가린 만큼 아래로 더 넘길 수 있게 — 마지막 페이지 맨 아래 글상자도 키보드 위로
+    const minTy = Math.min(maxTy, this.cssH - I.bottom - pad - docH - this._keyboardCover());
     this.ty = Math.min(maxTy, Math.max(minTy, this.ty));
+  }
+
+  /** 글상자를 쓰는 중일 때 화상 키보드(visualViewport 밖)가 캔버스 아래를 가린 높이 (화면 px) */
+  _keyboardCover() {
+    const vv = typeof window !== 'undefined' && window.visualViewport;
+    if (!this.textEdit || !vv || !this.canvas.isConnected) return 0;
+    const c = this.canvas.getBoundingClientRect();
+    return Math.max(0, c.bottom - (vv.offsetTop + vv.height));
   }
 
   /** 스크롤 (화면 px) — 페이지 모드 목록/버튼용 */
@@ -816,10 +825,23 @@ class DrawingEngine {
     c.addEventListener('touchstart', stopNative, { passive: false });
     c.addEventListener('touchmove', stopNative, { passive: false });
     c.addEventListener('selectstart', stopNative);
-    window.addEventListener('resize', () => this.resize());
+    // 창·visualViewport 리스너는 destroy() 에서 뗀다 (캔버스 리스너는 캔버스와 함께 사라진다)
+    this._onWindowResize = () => this.resize();
+    window.addEventListener('resize', this._onWindowResize);
     // iPad 화상 키보드가 뜨면 visualViewport 가 줄어든다 — 쓰는 중인 글상자가 키보드에 가리지 않게
-    const vv = window.visualViewport;
-    if (vv) vv.addEventListener('resize', () => { if (this.textEdit) this._revealTextInput(); });
+    this._onViewportResize = () => { if (this.textEdit) this._revealTextInput(); };
+    if (window.visualViewport) window.visualViewport.addEventListener('resize', this._onViewportResize);
+  }
+
+  /** 호스트가 편집기를 치울 때 — 창 리스너·그리기 예약·글상자 입력칸을 정리한다 (진행 중인 글상자는 먼저 commitText) */
+  destroy() {
+    window.removeEventListener('resize', this._onWindowResize);
+    if (window.visualViewport) window.visualViewport.removeEventListener('resize', this._onViewportResize);
+    if (this._raf != null) { cancelAnimationFrame(this._raf); this._raf = null; }
+    this.textEdit = null;
+    for (const el of [this.textInput, this._caretMirror]) if (el && el.parentElement) el.parentElement.removeChild(el);
+    this.textInput = null;
+    this._caretMirror = null;
   }
 
   _isPen(e) { return e.pointerType === 'pen'; }
@@ -1922,6 +1944,7 @@ class DrawingEngine {
       wordBreak: 'keep-all', overflowWrap: 'anywhere', caretColor: TEXT_EDIT_ACCENT,
     });
     ta.addEventListener('input', () => { this._growTextInput(); this._revealTextInput(); });
+    ta.addEventListener('keyup', e => { if (/^(Arrow|Page|Home|End)/.test(e.key || '')) this._revealTextInput(); }); // 화살표로 커서를 옮길 때
     ta.addEventListener('blur', () => this._endTextEdit(true));
     ta.addEventListener('keydown', e => {
       e.stopPropagation(); // 앱 단축키(p, e, Delete …)가 글자 입력을 가로채지 않게
@@ -1991,8 +2014,43 @@ class DrawingEngine {
     };
     if (visible.bottom - visible.top < 60) return;
     const r = ta.getBoundingClientRect();
-    const d = revealDelta({ top: r.top, bottom: r.bottom }, visible);
+    const d = revealTextDelta({ top: r.top, bottom: r.bottom }, this._caretRect(ta, r), visible);
     if (d) this.scrollBy(0, d);
+  }
+
+  /**
+   * 커서 줄의 화면 위치 {top, bottom}. 입력칸과 같은 글꼴·폭·줄바꿈의 숨은 거울 요소에 커서 앞 글을 넣고
+   * 끝에 표시를 달아 잰다 (자동 줄바꿈 포함). 커서가 끝이면 입력칸 아래까지.
+   */
+  _caretRect(ta, r) {
+    const pos = ta.selectionEnd ?? ta.value.length;
+    if (pos >= ta.value.length) {
+      const k = r.height / (ta.offsetHeight || r.height || 1); // 보이는 크기 / 실제 크기 (= 1/글상자 배율)
+      const lh = (parseFloat(ta.style.fontSize) || TEXT_SIZE) * TEXT_LINE * k;
+      return { top: Math.max(r.top, r.bottom - lh - TEXT_PAD * this.scale), bottom: r.bottom };
+    }
+    let m = this._caretMirror;
+    if (!m) {
+      m = document.createElement('div');
+      m.setAttribute('aria-hidden', 'true');
+      Object.assign(m.style, {
+        position: 'absolute', left: '0', top: '0', visibility: 'hidden', pointerEvents: 'none', height: 'auto',
+        border: '0', margin: '0', boxSizing: 'border-box', whiteSpace: 'pre-wrap', wordBreak: 'keep-all', overflowWrap: 'anywhere',
+      });
+      ta.parentElement.appendChild(m);
+      this._caretMirror = m;
+    }
+    const s = ta.style;
+    Object.assign(m.style, { font: s.font, lineHeight: s.lineHeight, padding: s.padding, width: s.width });
+    m.textContent = ta.value.slice(0, pos);
+    const lh = (parseFloat(s.fontSize) || TEXT_SIZE) * TEXT_LINE;
+    // 줄 높이만큼의 표시 — 줄 상자 위에 붙여(vertical-align: top) offsetTop 이 그 줄의 위가 되게
+    const mark = document.createElement('span');
+    Object.assign(mark.style, { display: 'inline-block', width: '0', height: lh + 'px', verticalAlign: 'top' });
+    m.appendChild(mark);
+    const k = r.height / (ta.offsetHeight || 1);
+    const top = r.top + mark.offsetTop * k;
+    return { top, bottom: top + lh * k };
   }
 
   _growTextInput() {
@@ -2388,9 +2446,19 @@ function textInputScale(screenFontPx, min = INPUT_MIN_FONT_PX) {
 }
 
 /**
- * 상자(글상자 입력칸)를 보이는 영역 안으로 넣으려면 화면을 얼마나 올릴지 (화면 px, +면 내용이 위로).
- * 아래(커서 줄)를 먼저 맞춘다 — 키보드에 가리지 않게. 위로 넘치면 내린다.
+ * 쓰는 중인 글상자를 보이게 하려면 화면을 얼마나 올릴지 (화면 px, +면 내용이 위로, 0 이면 그대로).
+ *  - 글상자가 보이는 영역에 다 들어가면 글상자 전체가 보이게 (아래가 키보드에 가리면 올리고, 위로 넘치면 내린다).
+ *  - 다 들어가지 않을 만큼 길면 커서 줄만 본다: 커서 줄이 보이면 움직이지 않고(위쪽 줄을 고칠 때 글상자 위가
+ *    밀려 올라가지 않게), 가리면 커서 줄이 보일 만큼만 넘긴다.
+ * box·caret {top, bottom}, visible {top, bottom} — 모두 화면 좌표
  */
+function revealTextDelta(box, caret, visible, margin = 16) {
+  const room = visible.bottom - visible.top - margin * 2;
+  if (box.bottom - box.top <= room) return revealDelta(box, visible, margin);
+  return revealDelta(caret, visible, margin);
+}
+
+/** 상자를 보이는 영역 안으로 (아래 먼저, 위로 넘치면 내림) — 화면 px, +면 내용이 위로 */
 function revealDelta(box, visible, margin = 16) {
   const over = box.bottom - (visible.bottom - margin);
   if (over > 0) return over;
@@ -2732,7 +2800,7 @@ if (typeof window !== 'undefined') {
     DrawingEngine, defaultPageLayout, normalizePageLayout, A4_BODY_ASPECT, PAPERS, PAPER_DEFAULT, paperSpec,
     input: { fingerDownAction, fingerOutcome, isPalmSuspect, touchIntent, TOUCH_TAP_SLOP, TOUCH_TAP_MS, PEN_GUARD_MS, PALM_CONTACT_PX,
       eraserRadiusFor, ERASER_PEN_PX, ERASER_PX },
-    view: { textInputScale, revealDelta, fitScaleFor, anchorView, INPUT_MIN_FONT_PX },
+    view: { textInputScale, revealDelta, revealTextDelta, fitScaleFor, anchorView, INPUT_MIN_FONT_PX },
     geom: {
       pageBodyRect, pageIndexOfBox, boxCrossesPage, snapBoxIntoPage, initialImageSize, fitSize, boxCorners, handleAt, resizeBox, rotateBox90,
       PAGE_HEADER_H, PAGE_BODY_MX, PAGE_BODY_MY, PHOTO_PAGE_FRAC, HANDLE_DOT_PX, HANDLE_HIT_PX,

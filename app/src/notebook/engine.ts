@@ -84,6 +84,8 @@ export interface Engine {
   selectionHandles(): { corner: 'nw' | 'ne' | 'sw' | 'se'; x: number; y: number }[];
   /** 선택 영역의 화면 상자 (캔버스 기준 px) — 선택이 없으면 null */
   selectionScreenBox(): { x: number; y: number; w: number; h: number } | null;
+  /** 편집기를 치울 때 — 창·visualViewport 리스너와 글상자 입력칸을 정리한다 (먼저 commitText) */
+  destroy(): void;
   renderLayoutPages(): HTMLCanvasElement[];
   renderPageThumbnail(i?: number, width?: number): HTMLCanvasElement | null;
   whenImagesReady(): Promise<unknown>;
