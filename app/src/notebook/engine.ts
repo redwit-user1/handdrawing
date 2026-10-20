@@ -80,6 +80,8 @@ export interface Engine {
   /** 사진을 시계 방향으로 90° 돌린다 (돌린 그림 데이터로 바꿈, 실행 취소 한 단계).
    *  true 돌림, false 돌릴 수 없음, null 무시(같은 사진을 돌리는 중·그 사이 바뀜) */
   rotateImage(stroke: Stroke): Promise<boolean | null>;
+  /** 진행 중인 사진 돌리기가 모두 끝날 때까지 (편집기를 치우기 전 마지막 저장 앞) */
+  whenIdle(): Promise<void>;
   /** 크기 손잡이 화면 좌표 (캔버스 기준 px) — 객체 하나만 선택했을 때 네 모서리, 아니면 [] */
   selectionHandles(): { corner: 'nw' | 'ne' | 'sw' | 'se'; x: number; y: number }[];
   /** 선택 영역의 화면 상자 (캔버스 기준 px) — 선택이 없으면 null */

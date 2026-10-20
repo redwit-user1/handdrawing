@@ -60,6 +60,8 @@ class DrawingEngine {
     this._imgCache = new Map();   // 이미지 획의 src → HTMLImageElement
     this._rotating = new WeakSet(); // 돌리는 중인 사진 (두 번 누름 막기)
     this._rotations = new Map();    // 이 세션에서 돌려 만든 그림 src → { orig, turns } (원본에서 다시 돌려 화질 유지)
+    this._rotateJobs = new Set();   // 진행 중인 돌리기 (whenIdle 이 기다린다)
+    this._destroyed = false;        // destroy() 뒤 — 늦게 끝난 비동기 작업이 손대지 않게
 
     // 페이지 모드 — null 이면 무한 캔버스(기존 동작)
     this.layout = null;           // { type: 'pages', pageW, pageH, gap, header? }
@@ -691,8 +693,28 @@ class DrawingEngine {
     return true;
   }
 
-  /** 손잡이를 월드 좌표 w 까지 끌었다 */
+  /** 손잡이를 월드 좌표 w 까지 끌었다. 표는 칸 글을 모두 다시 재므로 한 화면(rAF)에 한 번만 */
   _resizeTo(d, w) {
+    if (d.target.tool !== 'table') { this._applyResize(d, w); return; }
+    d.pendingW = w;
+    if (d.resizeRaf != null) return;
+    d.resizeRaf = requestAnimationFrame(() => {
+      d.resizeRaf = null;
+      const p = d.pendingW;
+      d.pendingW = null;
+      if (p && this.drawing === d && !this._destroyed) this._applyResize(d, p);
+    });
+  }
+
+  /** 아직 반영하지 않은 표 크기 바꾸기를 바로 반영한다 (끝낼 때) */
+  _flushResize(d) {
+    if (d.resizeRaf != null) { cancelAnimationFrame(d.resizeRaf); d.resizeRaf = null; }
+    const p = d.pendingW;
+    d.pendingW = null;
+    if (p) this._applyResize(d, p);
+  }
+
+  _applyResize(d, w) {
     const s = d.target;
     if (!this.selection || !this.selection.strokes.has(s)) return;
     const min = s.tool === 'table' ? { minW: Math.max(40, (s.cols || 1) * 32), minH: 8 }
@@ -728,6 +750,8 @@ class DrawingEngine {
   /** 손잡이 끌기 끝 — revert: 없던 일로(기록 없음), 아니면 페이지 안으로 맞추고 실행 취소 한 단계(replace) */
   _endResize(d, { revert = false } = {}) {
     const s = d.target;
+    if (revert) { if (d.resizeRaf != null) cancelAnimationFrame(d.resizeRaf); d.resizeRaf = null; d.pendingW = null; }
+    else if (this.strokes.includes(s)) this._flushResize(d);
     this.drawing = null;
     if (!this.strokes.includes(s)) return;
     if (revert || !d.changed) {
@@ -735,7 +759,7 @@ class DrawingEngine {
     } else {
       this._snapIntoPage([s]);
       const after = snapshotStroke(s);
-      if (JSON.stringify(after) !== JSON.stringify(d.before)) {
+      if (!sameData(after, d.before)) {
         this._pushUndo({ type: 'replace', stroke: s, before: d.before, after });
         this._emitChange(true);
       }
@@ -757,7 +781,14 @@ class DrawingEngine {
     if (this.readonly || !stroke || stroke.tool !== 'image' || !this.strokes.includes(stroke)) return false;
     if (this._rotating.has(stroke)) return null; // 두 번 누름 — 앞의 돌리기가 끝나기 전
     this._rotating.add(stroke);
-    try { return await this._rotateImage(stroke); } finally { this._rotating.delete(stroke); }
+    const job = this._rotateImage(stroke);
+    this._rotateJobs.add(job);
+    try { return await job; } finally { this._rotating.delete(stroke); this._rotateJobs.delete(job); }
+  }
+
+  /** 진행 중인 사진 돌리기가 모두 끝날 때까지 — 호스트가 편집기를 치우기 전 마지막 저장 앞에서 기다린다 */
+  whenIdle() {
+    return Promise.allSettled([...this._rotateJobs]).then(() => undefined);
   }
 
   async _rotateImage(stroke) {
@@ -790,7 +821,7 @@ class DrawingEngine {
     if (!(next.complete && next.naturalWidth)) { try { await next.decode(); } catch (_) {} }
     this._imgCache.set(src, next);
     // 기다리는 사이 실행 취소·다른 고치기로 그림이 바뀌었으면 손대지 않는다
-    if (this.readonly || !this.strokes.includes(stroke) || stroke.src !== src0) return null;
+    if (this._destroyed || this.readonly || !this.strokes.includes(stroke) || stroke.src !== src0) return null;
     const before = snapshotStroke(stroke);
     let b = rotateBox90(objectBox(stroke));
     if (this.layout) {
@@ -837,12 +868,17 @@ class DrawingEngine {
     this._onWindowResize = () => this.resize();
     window.addEventListener('resize', this._onWindowResize);
     // iPad 화상 키보드가 뜨면 visualViewport 가 줄어든다 — 쓰는 중인 글상자가 키보드에 가리지 않게
-    this._onViewportResize = () => { if (this.textEdit) this._revealTextInput(); };
+    // 키보드가 내려가면(글상자 확정 뒤) 키보드 몫으로 더 넘겨 둔 화면을 문서 안으로 되돌린다
+    this._onViewportResize = () => {
+      if (this.textEdit) this._revealTextInput();
+      else { this._emitViewport(); this.requestRender(true); } // _emitViewport 가 _clampView 를 부른다
+    };
     if (window.visualViewport) window.visualViewport.addEventListener('resize', this._onViewportResize);
   }
 
   /** 호스트가 편집기를 치울 때 — 창 리스너·그리기 예약·글상자 입력칸을 정리한다 (진행 중인 글상자는 먼저 commitText) */
   destroy() {
+    this._destroyed = true;
     window.removeEventListener('resize', this._onWindowResize);
     if (window.visualViewport) window.visualViewport.removeEventListener('resize', this._onViewportResize);
     if (this._raf != null) { cancelAnimationFrame(this._raf); this._raf = null; }
@@ -1017,8 +1053,9 @@ class DrawingEngine {
   }
 
   _onPointerMove(e) {
-    if (this.tool === 'eraser' && !this.drawing) {
-      // 지우개 커서 미리보기 (펜이 떠 있으면 펜 크기로)
+    // 지우개 커서 미리보기 (펜이 떠 있으면 펜 크기로). 손가락으로 쓰기가 꺼져 있으면 손가락은 넘기기라 미리보지 않는다
+    // (호버하는 펜과 넘기는 손가락이 번갈아 와도 크기가 깜박이지 않게)
+    if (this.tool === 'eraser' && !this.drawing && !(e.pointerType === 'touch' && !this.touchDraws)) {
       this._eraserPointer = e.pointerType;
       this.eraserPos = this._pos(e);
       this.requestRender();
@@ -1503,6 +1540,7 @@ class DrawingEngine {
   }
 
   requestRender(bgDirty = false) {
+    if (this._destroyed) return;
     if (bgDirty) this._bgDirty = true;
     this._dirty = true;
     if (this._raf == null) {
@@ -2395,7 +2433,6 @@ function defaultPageLayout(date, paper) {
   return l;
 }
 
-/** 상자 모양 객체(지우개로 지우지 않고, 올가미로 옮긴다) */
 /* ── 손가락 입력 판정 (손가락으로 쓰기가 꺼져 있을 때 손가락 한 개) ── */
 const TOUCH_TAP_SLOP = 10;   // 화면 px — 이보다 많이 움직이면 탭이 아니라 옮기기·화면 넘기기
 const TOUCH_TAP_MS = 500;    // 이보다 오래 누르고 있다 떼면 탭으로 보지 않는다
@@ -2511,6 +2548,7 @@ function anchorView(view, oldBox, newBox, fit) {
   return { scale, tx: nc.x - wx * scale, ty: nc.y - wy * scale };
 }
 
+/** 상자 모양 객체(지우개로 지우지 않고, 올가미로 옮긴다) */
 function isBoxObject(s) {
   return s.tool === 'image' || s.tool === 'text' || s.tool === 'table';
 }
@@ -2660,11 +2698,39 @@ function normalizeCells(cells, rows, cols) {
   return out;
 }
 
-function snapshotStroke(s) { return JSON.parse(JSON.stringify(s)); }
+/**
+ * 획·객체의 깊은 복사 (JSON 왕복과 같은 결과: undefined·함수는 뺀다). 문자열은 복사하지 않고 함께 쓴다 —
+ * 사진 data URL(수백 KB~MB)을 크기 바꾸기·돌리기마다 실행 취소 기록에 두 벌씩 새로 만들지 않게.
+ */
+function cloneData(v) {
+  if (Array.isArray(v)) return v.map((x) => (x === undefined || typeof x === 'function' ? null : cloneData(x)));
+  if (v && typeof v === 'object') {
+    const o = {};
+    for (const k of Object.keys(v)) {
+      const x = v[k];
+      if (x !== undefined && typeof x !== 'function') o[k] = cloneData(x);
+    }
+    return o;
+  }
+  return v;
+}
+
+/** cloneData 로 만든 두 값이 같은가 (같은 문자열은 참조가 같아 바로 비교된다) */
+function sameData(a, b) {
+  if (a === b || (a !== a && b !== b)) return true; // NaN 도 같다고 본다 (JSON 으로 비교하던 것과 같게)
+  if (Array.isArray(a)) return Array.isArray(b) && a.length === b.length && a.every((x, i) => sameData(x, b[i]));
+  if (a && b && typeof a === 'object' && typeof b === 'object' && !Array.isArray(b)) {
+    const ka = Object.keys(a), kb = Object.keys(b);
+    return ka.length === kb.length && ka.every((k) => Object.prototype.hasOwnProperty.call(b, k) && sameData(a[k], b[k]));
+  }
+  return false;
+}
+
+function snapshotStroke(s) { return cloneData(s); }
 
 function restoreSnapshot(s, snap) {
   for (const k of Object.keys(s)) if (!(k in snap)) delete s[k];
-  Object.assign(s, JSON.parse(JSON.stringify(snap)));
+  Object.assign(s, cloneData(snap));
 }
 
 function pathExtent(path) {

@@ -250,8 +250,10 @@ export default function Note({ id, onBack, onOpen, onRelogin }: { id: string; on
       engineRef.current = null;
       // 떠날 때: 작업본 저장 → 바뀐 게 있으면 자동 버전 → 동기화
       void (async () => {
-        if (saveTimer.current) clearTimeout(saveTimer.current);
         engine.commitText();
+        // 누르자마자 떠난 사진 돌리기도 마지막 저장에 담는다 (끝나고 나서 destroy — 그 뒤로는 엔진이 손대지 않는다)
+        await engine.whenIdle();
+        if (saveTimer.current) clearTimeout(saveTimer.current);
         engine.destroy(); // 창·visualViewport 리스너 떼기 (노트를 열 때마다 쌓이지 않게)
         if (dirtyRef.current && docRef.current && !readOnlyRef.current) {
           dirtyRef.current = false;

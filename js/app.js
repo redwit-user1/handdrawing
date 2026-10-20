@@ -34,7 +34,7 @@
     onPenDetected() {
       // 펜이 감지되면 손가락 그리기를 자동으로 꺼서 팜 리젝션 강화
       setTouchDraws(false);
-      toast('펜 감지됨 — 손가락은 화면 이동에 사용됩니다');
+      toast('펜 감지됨 — 손가락은 화면 이동·선택에 사용됩니다');
     },
     onSelection() {
       updateSelectionBar();
@@ -301,17 +301,23 @@
     }));
 
   /* ============== 선택 액션 바 ============== */
+  // 선택 상자와 막대 사이 (화면 px) — 모서리 크기 손잡이(잡는 반지름 22px)를 가리지 않게 그보다 넓게
+  const SEL_BAR_GAP = 28;
+  /** 선택한 것 바로 위, 자리가 없으면 아래(그래도 없으면 캔버스 맨 위), 언제나 화면 안 */
   function updateSelectionBar() {
     const bar = $('#selection-bar');
-    const sel = engine.selection;
+    const sel = engine.selectionScreenBox();
     if (!sel) { bar.hidden = true; return; }
     bar.hidden = false;
     const canvasRect = canvas.getBoundingClientRect();
-    const cx = ((sel.bbox.minX + sel.bbox.maxX) / 2) * engine.scale + engine.tx + canvasRect.left;
-    const topY = sel.bbox.minY * engine.scale + engine.ty + canvasRect.top;
     const w = bar.offsetWidth, h = bar.offsetHeight;
+    const cx = canvasRect.left + sel.x + sel.w / 2;
+    const minY = canvasRect.top + 8, maxY = Math.max(minY, Math.min(canvasRect.bottom, window.innerHeight) - h - 8);
+    const above = canvasRect.top + sel.y - SEL_BAR_GAP - h;
+    const below = canvasRect.top + sel.y + sel.h + SEL_BAR_GAP;
+    const top = above >= minY ? above : below <= maxY ? below : minY;
     bar.style.left = Math.max(8, Math.min(cx - w / 2, window.innerWidth - w - 8)) + 'px';
-    bar.style.top = Math.max(canvasRect.top + 8, topY - h - 12) + 'px';
+    bar.style.top = top + 'px';
   }
   $('#sel-delete').addEventListener('click', () => engine.deleteSelection());
   $('#sel-duplicate').addEventListener('click', () => engine.duplicateSelection());
@@ -472,7 +478,7 @@
   }
   $('#btn-touchdraw').addEventListener('click', () => {
     setTouchDraws(!engine.touchDraws);
-    toast(engine.touchDraws ? '손가락으로 그리기 켜짐' : '손가락은 화면 이동에 사용됩니다');
+    toast(engine.touchDraws ? '손가락으로 그리기 켜짐' : '손가락은 화면 이동·선택에 사용됩니다');
   });
 
   $('#btn-grid').addEventListener('click', () => {

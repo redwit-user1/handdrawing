@@ -457,8 +457,9 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .
 .more-pop .insert-item:disabled { opacity: 0.4; cursor: default; }
 .ink-ic { display: grid; place-items: center; width: 24px; height: 24px; }
 
-/* 선택 막대가 화면보다 넓으면 줄을 바꾼다 */
-.selection-bar { max-width: calc(100% - 16px); flex-wrap: wrap; justify-content: center; }
+/* 선택 막대가 화면보다 넓으면 줄을 바꾼다. 폭은 내용대로(max-content) — 왼쪽 끝 기본값 자리(left: 50%)에서
+   재면 남은 폭에 눌려 줄이 바뀐 채 높이가 재어지므로 */
+.selection-bar { width: max-content; max-width: calc(100% - 16px); flex-wrap: wrap; justify-content: center; }
 
 /* ── 좁은 화면의 노트 머리줄: 아이콘만, 부제 숨김, 팝오버는 화면 폭에 맞춰 ── */
 @media (max-width: 640px) {

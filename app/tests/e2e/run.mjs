@@ -1171,6 +1171,20 @@ try {
     await tid('tool-pen').click();
     assert(await E((e) => e.strokes.some((s) => s.tool === 'text' && /^고침 첫 줄\n2줄/.test(s.text))), '첫 줄을 고친 20줄 글상자');
 
+    // 문서 맨 끝에 글상자를 열면 키보드 몫만큼 더 넘긴다 — 쓰지 않고(빈 글상자) 키보드가 뜬 채 닫은 뒤 키보드를 내리면
+    // 화면이 문서 끝으로 돌아온다 (글을 쓰면 빈 페이지가 하나 늘어 끝이 달라지므로 빈 글상자로 본다)
+    await E((e) => { e.fitWidth(); e.ty = -1e9; e._clampView(); e.requestRender(true); });
+    const tyEnd = await E((e) => e.ty), nEnd = await E((e) => e.strokes.length);
+    await tid('tool-text').click();
+    await page.mouse.click(host.x + host.width / 2, host.y + host.height - 40);
+    await page.locator('textarea.hd-text-input').waitFor();
+    await keyboard(400);
+    const tyKb = await until(() => E((e, end) => e.ty < end - 100 && e.ty, tyEnd), '키보드 몫만큼 더 넘김');
+    await tid('tool-pen').click(); // 키보드가 뜬 채 닫음
+    assert((await E((e) => e.strokes.length)) === nEnd, '빈 글상자는 남지 않음');
+    await keyboard(0);
+    const tyAfter = await E((e) => e.ty);
+    assert(Math.abs(tyAfter - tyEnd) < 1, `키보드를 내리면 문서 끝으로 돌아옴 (끝 ${tyEnd.toFixed(0)}, 키보드 ${tyKb.toFixed(0)} → ${tyAfter.toFixed(0)})`);
 
     // 수식 화면 키보드: 뜨면 --kb, 내리면 0, 키보드가 뜬 채로 대화상자를 닫아도 0
     const kbVar = () => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--kb').trim());
