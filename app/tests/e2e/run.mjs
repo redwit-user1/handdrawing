@@ -990,6 +990,153 @@ try {
     await cdp.detach();
   });
 
+  await check('태블릿 화면: 돌려도 보던 쪽·자리 유지, 입력칸 16px 이상(글상자는 축소해도), 키보드 위로 대화상자·글상자, 펜 지우개는 닿은 획만, 320 폭에서 넘침 없이 "더보기"로 모든 도구', async () => {
+    const P = '태블릿 화면 노트';
+    await tid('back').click();
+    // 입력칸 글자 16px 이상 (iOS 는 그보다 작으면 포커스할 때 화면을 확대한다)
+    const fontPx = (sel) => page.evaluate((s) => [...document.querySelectorAll(s)].map((el) => parseFloat(getComputedStyle(el).fontSize)), sel);
+    await tid('new-note').first().click();
+    await tid('new-note-dialog').waitFor();
+    assert((await fontPx('[data-testid=new-note-title]'))[0] >= 16, '새 노트 제목칸 16px 이상');
+    await tid('new-note-title').fill(P);
+    await tid('new-note-create').click();
+    await tid('palette').waitFor();
+    assert(/maximum-scale=1/.test(await page.locator('meta[name=viewport]').getAttribute('content')), '뷰포트 확대 막음');
+    const cdp = await context.newCDPSession(page);
+    const E = (fn, arg) => page.evaluate(new Function('arg', `const e = window.__engine; return (${fn})(e, arg);`), arg);
+    const penLine = async (pts) => {
+      const ev = (type, [x, y], extra = {}) => cdp.send('Input.dispatchMouseEvent', { type, x, y, pointerType: 'pen', force: type === 'mouseReleased' ? 0 : 0.5, button: 'left', buttons: type === 'mouseReleased' ? 0 : 1, clickCount: 1, ...extra });
+      await ev('mouseMoved', pts[0], { buttons: 0, button: 'none', force: 0 });
+      await ev('mousePressed', pts[0]);
+      for (let i = 1; i < pts.length; i++) for (let k = 1; k <= 8; k++) await ev('mouseMoved', [pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * k / 8, pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * k / 8]);
+      await ev('mouseReleased', pts[pts.length - 1]);
+    };
+    const w2c = (wx, wy) => E((e, [wx, wy]) => { const r = e.canvas.getBoundingClientRect(); return [r.left + wx * e.scale + e.tx, r.top + wy * e.scale + e.ty]; }, [wx, wy]);
+    const view = () => E((e) => {
+      const I = e.insets, cx = I.left + (e.cssW - I.left - I.right) / 2, cy = I.top + (e.cssH - I.top - I.bottom) / 2;
+      const wy = (cy - e.ty) / e.scale;
+      return { x: (cx - e.tx) / e.scale, y: wy, scale: e.scale, page: Math.floor(wy / (e.layout.pageH + e.layout.gap)) + 1 };
+    });
+    /** 화상 키보드 흉내 — visualViewport 높이를 줄이고 resize 를 보낸다 (0 = 내림) */
+    const keyboard = (px) => page.evaluate((px) => {
+      const vv = window.visualViewport;
+      if (px) Object.defineProperty(vv, 'height', { configurable: true, get: () => window.innerHeight - px });
+      else delete vv.height;
+      vv.dispatchEvent(new Event('resize'));
+    }, px);
+
+    // 1) 3쪽에서 쓰다가 세로로 돌리고 다시 가로로: 같은 쪽·같은 자리(가운데)가 보이고, 폭 맞춤은 새 폭에 다시 맞춘다
+    await tid('tool-pen').click();
+    await E((e) => { e.fitWidth(); e.ty = e.insets.top + 16 - 2.4 * (e.layout.pageH + e.layout.gap) * e.scale; e.requestRender(true); });
+    const c0 = await view();
+    assert(c0.page === 3, `3쪽을 보는 중 (${c0.page})`);
+    await page.mouse.move(500, 400); await page.mouse.down(); await page.mouse.move(600, 420, { steps: 8 }); await page.mouse.up();
+    await page.setViewportSize({ width: 834, height: 1194 });
+    const c1 = await until(async () => { const v = await view(); return v.scale < c0.scale - 0.05 && v; }, '세로 화면 폭에 맞춤');
+    assert(Math.abs(c1.y - c0.y) < 1 && Math.abs(c1.x - c0.x) < 1 && c1.page === 3, `세로로 돌려도 같은 자리 (${c0.y.toFixed(1)} → ${c1.y.toFixed(1)}, ${c1.page}쪽)`);
+    await shot('12-rotate-portrait');
+    await page.setViewportSize({ width: 1194, height: 834 });
+    const c2 = await until(async () => { const v = await view(); return Math.abs(v.scale - c0.scale) < 1e-6 && v; }, '가로 화면 폭에 다시 맞춤');
+    assert(Math.abs(c2.y - c0.y) < 1 && c2.page === 3, `다시 가로로 돌려도 같은 자리 (${c2.y.toFixed(1)})`);
+
+    // 2) 입력칸: 제목·표 칸·화학식 16px 이상, 글상자는 축소해 봐도 입력칸 글자 16px 이상(보이는 크기는 확대 배율 그대로)
+    await page.locator('.title-btn').click();
+    assert((await fontPx('[data-testid=title-input]'))[0] >= 16, '제목칸');
+    await page.keyboard.press('Escape');
+    await tid('tool-insert').click(); await tid('insert-table').click();
+    const cells = await fontPx('[data-testid=table-grid] input');
+    assert(cells.length === 9 && cells.every((f) => f >= 16), `표 칸 (${cells})`);
+    // 3) 키보드(400px)가 뜨면 대화상자가 그 위로: 넣기 버튼이 키보드 위, 내리면 제자리
+    await keyboard(400);
+    const dlg = await until(() => page.evaluate(() => {
+      const s = document.querySelector('[data-testid=table-submit]').getBoundingClientRect(), d = document.querySelector('[data-testid=table-dialog]').getBoundingClientRect();
+      return getComputedStyle(document.documentElement).getPropertyValue('--kb').trim() === '400px' && { submit: s.bottom, top: d.top, bottom: d.bottom, kbTop: innerHeight - 400 };
+    }), '--kb 400px');
+    assert(dlg.submit <= dlg.kbTop && dlg.bottom <= dlg.kbTop && dlg.top >= 0, `표 대화상자가 키보드 위 (${JSON.stringify(dlg)})`);
+    await shot('13-dialog-keyboard');
+    await keyboard(0);
+    await until(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--kb').trim() === '0px'), '키보드 내림');
+    await page.keyboard.press('Escape');
+    await tid('tool-insert').click(); await tid('insert-ce').click();
+    assert((await fontPx('[data-testid=ce-input]'))[0] >= 16, '화학식 칸');
+    await page.keyboard.press('Escape');
+
+    await E((e) => { e.fitWidth(); e.zoomBy(0.5); });
+    await tid('tool-text').click();
+    const p = await w2c(200, 300);
+    await page.mouse.click(p[0], p[1]);
+    await page.locator('textarea.hd-text-input').waitFor();
+    const ta = await E((e) => {
+      const t = document.querySelector('textarea.hd-text-input'), s = e.textEdit.stroke;
+      return { fs: parseFloat(getComputedStyle(t).fontSize), w: t.getBoundingClientRect().width, boxW: (s.points[1][0] - s.points[0][0]) * e.scale, screenFs: s.fontSize * e.scale };
+    });
+    assert(ta.screenFs < 16 && ta.fs >= 16 && Math.abs(ta.w - ta.boxW) < 1, `축소한 글상자: 입력칸 글자 ${ta.fs}px, 보이는 폭 ${ta.w.toFixed(1)} = ${ta.boxW.toFixed(1)}`);
+    await page.keyboard.type('축소');
+    await tid('tool-pen').click();
+
+    // 글상자를 화면 아래쪽에 열고 키보드가 뜨면 캔버스가 올라가 입력칸이 키보드 위로
+    await E((e) => e.fitWidth());
+    await tid('tool-text').click();
+    const host = await tid('board').boundingBox();
+    await page.mouse.click(host.x + host.width / 2, host.y + host.height - 60);
+    await page.locator('textarea.hd-text-input').waitFor();
+    await keyboard(400);
+    const tb = await until(() => page.evaluate(() => { const r = document.querySelector('textarea.hd-text-input').getBoundingClientRect(); return r.bottom <= innerHeight - 400 && { bottom: r.bottom, kbTop: innerHeight - 400 }; }), '글상자가 키보드 위로');
+    for (let i = 0; i < 5; i++) await page.keyboard.press('Enter');
+    await page.keyboard.type('키보드 위 글상자');
+    const tb2 = await page.evaluate(() => document.querySelector('textarea.hd-text-input').getBoundingClientRect().bottom);
+    assert(tb2 <= tb.kbTop, `여러 줄 써도 키보드 위 (${tb2.toFixed(0)} ≤ ${tb.kbTop})`);
+    await shot('14-textbox-keyboard');
+    await keyboard(0);
+    await tid('tool-pen').click();
+    assert(await E((e) => e.strokes.some((s) => s.tool === 'text' && /키보드 위 글상자$/.test(s.text))), '키보드 위에서 쓴 글상자');
+
+    // 4) 지우개: 10 단위 떨어진 두 획 중 한 획 3 단위 옆 — 펜(8px)은 그 획만, 마우스(16px)는 예전처럼 둘 다
+    await E((e) => e.fitWidth());
+    const a1 = await w2c(100, 400), a2 = await w2c(400, 400), b1 = await w2c(100, 410), b2 = await w2c(400, 410);
+    await penLine([a1, a2]); await penLine([b1, b2]);
+    await page.waitForTimeout(100);
+    await tid('tool-eraser').click();
+    const ep = await w2c(250, 397);
+    let n0 = await E((e) => e.strokes.length);
+    await penLine([ep, [ep[0] + 1, ep[1]]]);
+    const n1 = await E((e) => e.strokes.length);
+    assert(n1 === n0 - 1, `펜 지우개는 닿은 획 하나만 (${n0} → ${n1}, 배율 ${await E((e) => e.scale)})`);
+    assert(await E((e) => e.strokes.some((s) => s.tool === 'pen' && Math.abs(s.points[0][1] - 410) < 1)), '옆 획은 남음');
+    await tid('undo').click();
+    n0 = await E((e) => e.strokes.length);
+    await page.mouse.click(ep[0], ep[1]);
+    assert(await E((e) => e.strokes.length) === n0 - 2, '마우스 지우개(16px)는 예전처럼 둘 다');
+    await tid('undo').click();
+    await waitSaved();
+
+    // 5) Split View 1/3 (320 폭): 가로 넘침 없음, 도구·머리줄 버튼 모두 화면 안 44px 이상, "더보기"로 넣기·글상자
+    await page.setViewportSize({ width: 320, height: 1194 });
+    await until(async () => (await tid('palette').getAttribute('data-more')) !== '', '도구 막대 접힘');
+    const lay = await page.evaluate(() => {
+      const btns = [...document.querySelectorAll('.note-bar button, [data-testid=palette] button')].filter((b) => b.getClientRects().length).map((b) => b.getBoundingClientRect());
+      return { scrollW: document.documentElement.scrollWidth, barOverflow: document.querySelector('.note-bar').scrollWidth - document.querySelector('.note-bar').clientWidth,
+        out: btns.filter((r) => r.left < 0 || r.right > innerWidth).length, small: btns.filter((r) => r.width < 44 || r.height < 44).length, n: btns.length };
+    });
+    assert(lay.scrollW <= 320 && lay.barOverflow <= 0 && lay.out === 0 && lay.small === 0, `320 폭 (${JSON.stringify(lay)})`);
+    await tid('tool-more').click();
+    await tid('more-insert').click();
+    const ins = await tid('insert-table').boundingBox();
+    assert(ins && ins.x >= 0 && ins.x + ins.width <= 320, `넣기 메뉴가 화면 안 (${JSON.stringify(ins)})`);
+    await shot('15-width-320-insert');
+    await tid('insert-table').click();
+    const td = await tid('table-dialog').boundingBox();
+    assert(td.x >= 0 && td.x + td.width <= 320, '표 대화상자가 화면 안');
+    await page.keyboard.press('Escape');
+    await tid('tool-more').click();
+    await tid('more-text').click();
+    assert(await E((e) => e.tool) === 'text', '더보기 → 글상자 도구');
+    await tid('tool-pen').click();
+    await page.setViewportSize({ width: 1194, height: 834 });
+    await until(async () => (await tid('palette').getAttribute('data-more')) === '', '넓은 화면 → 도구 막대 모두');
+    await cdp.detach();
+  });
+
   await check('오프라인 작성 기한 만료 → 편집 잠금, 기록은 보존', async () => {
     await admin('/config', { tokenTtlMs: 8000 });
     await tid('back').click();

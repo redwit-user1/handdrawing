@@ -161,8 +161,8 @@ class DrawingEngine {
   fitWidth(maxScale = 1.25) {
     if (!this.layout) return;
     const I = this.insets;
-    const availW = Math.max(100, this.cssW - I.left - I.right - 32);
-    this.scale = Math.max(this.minScale, Math.min(maxScale, availW / this.layout.pageW));
+    this._fitMax = maxScale; // 화면 크기가 바뀔 때 '폭 맞춤으로 보던 중'인지 알아보려고
+    this.scale = fitScaleFor({ w: this.cssW, h: this.cssH, insets: I }, this.layout.pageW, this.minScale, maxScale);
     this.tx = I.left + (this.cssW - I.left - I.right - this.layout.pageW * this.scale) / 2;
     this.ty = I.top + 16;
     this.requestRender(true);
@@ -817,6 +817,9 @@ class DrawingEngine {
     c.addEventListener('touchmove', stopNative, { passive: false });
     c.addEventListener('selectstart', stopNative);
     window.addEventListener('resize', () => this.resize());
+    // iPad 화상 키보드가 뜨면 visualViewport 가 줄어든다 — 쓰는 중인 글상자가 키보드에 가리지 않게
+    const vv = window.visualViewport;
+    if (vv) vv.addEventListener('resize', () => { if (this.textEdit) this._revealTextInput(); });
   }
 
   _isPen(e) { return e.pointerType === 'pen'; }
@@ -931,6 +934,7 @@ class DrawingEngine {
     if (erasing) {
       this.erasedInDrag = [];
       this.drawing = { erasing: true, pointerId: e.pointerId, pointerType: e.pointerType };
+      this._eraserPointer = e.pointerType;
       this._eraseAt(x, y);
       this.eraserPos = { x, y };
       this.requestRender();
@@ -978,7 +982,8 @@ class DrawingEngine {
 
   _onPointerMove(e) {
     if (this.tool === 'eraser' && !this.drawing) {
-      // 지우개 커서 미리보기
+      // 지우개 커서 미리보기 (펜이 떠 있으면 펜 크기로)
+      this._eraserPointer = e.pointerType;
       this.eraserPos = this._pos(e);
       this.requestRender();
     }
@@ -1383,7 +1388,8 @@ class DrawingEngine {
   }
 
   /* ============== 지우개 ============== */
-  get eraserRadius() { return 16; } // 화면 픽셀 기준
+  // 화면 픽셀 기준 — 펜은 작게(촘촘한 글씨에서 한 획만), 손가락·마우스는 16
+  get eraserRadius() { return eraserRadiusFor(this._eraserPointer); }
 
   _eraseAt(sx, sy) {
     const w = this.screenToWorld(sx, sy);
@@ -1437,9 +1443,23 @@ class DrawingEngine {
     }
     this.canvas.style.width = this.cssW + 'px';
     this.canvas.style.height = this.cssH + 'px';
+    // 페이지 모드: 화면이 돌거나 폭이 바뀌어도 보던 곳(보이는 영역 가운데)을 지킨다 — 예전에는 왼쪽 위가 고정이라
+    // 세로↔가로로 돌리면 엉뚱한 곳이 보였다. 여백(insets)이 바뀐 것도 같은 방식으로 맞춘다
+    const prev = this._viewBox;
+    const box = { w: this.cssW, h: this.cssH, insets: { ...this.insets } };
+    const I0 = prev && prev.insets, I1 = box.insets;
+    const changed = prev && (prev.w !== box.w || prev.h !== box.h ||
+      I0.top !== I1.top || I0.right !== I1.right || I0.bottom !== I1.bottom || I0.left !== I1.left);
+    if (this.layout && changed && Math.min(prev.w, prev.h, box.w, box.h) > 50) {
+      const v = anchorView({ scale: this.scale, tx: this.tx, ty: this.ty }, prev, box,
+        { pageW: this.layout.pageW, minScale: this.minScale, maxScale: this._fitMax || 1.25 });
+      this.scale = v.scale; this.tx = v.tx; this.ty = v.ty;
+    }
+    this._viewBox = box;
     this._clampView();
     this._positionTextInput();
     this.requestRender(true);
+    if (changed && this.opts.onViewport) this.opts.onViewport(this.scale);
   }
 
   requestRender(bgDirty = false) {
@@ -1901,7 +1921,7 @@ class DrawingEngine {
       background: 'rgba(255,255,255,0.92)', boxSizing: 'border-box', whiteSpace: 'pre-wrap',
       wordBreak: 'keep-all', overflowWrap: 'anywhere', caretColor: TEXT_EDIT_ACCENT,
     });
-    ta.addEventListener('input', () => this._growTextInput());
+    ta.addEventListener('input', () => { this._growTextInput(); this._revealTextInput(); });
     ta.addEventListener('blur', () => this._endTextEdit(true));
     ta.addEventListener('keydown', e => {
       e.stopPropagation(); // 앱 단축키(p, e, Delete …)가 글자 입력을 가로채지 않게
@@ -1922,6 +1942,7 @@ class DrawingEngine {
     ta.value = stroke.text || '';
     ta.style.display = 'block';
     this._positionTextInput();
+    this._revealTextInput();
     this.requestRender(true);
     // 포인터 이벤트 처리가 끝난 뒤 포커스해야 iOS 에서 키보드가 뜬다
     ta.focus({ preventScroll: true });
@@ -1933,18 +1954,45 @@ class DrawingEngine {
     if (!this.textEdit || !this.textInput) return;
     const s = this.textEdit.stroke;
     const fs = (s.fontSize || TEXT_SIZE) * this.scale;
+    // iOS 는 16px 보다 작은 글자 입력칸에 포커스하면 앱 화면 전체를 확대한다 — 축소해 보고 있을 때도 입력칸 글자는
+    // 16px 이상으로 두고, 칸 전체를 scale(1/k) 로 줄여 보이는 크기는 페이지 글자와 같게 한다
+    const k = textInputScale(fs);
     const [[ax, ay], [bx]] = s.points;
     const ta = this.textInput;
     Object.assign(ta.style, {
       left: (Math.min(ax, bx) * this.scale + this.tx) + 'px',
       top: (ay * this.scale + this.ty) + 'px',
-      width: (Math.abs(bx - ax) * this.scale) + 'px',
-      font: `${fs}px ${TEXT_FONT}`,
+      width: (Math.abs(bx - ax) * this.scale * k) + 'px',
+      font: `${fs * k}px ${TEXT_FONT}`,
       lineHeight: String(TEXT_LINE),
-      padding: (TEXT_PAD * this.scale) + 'px',
+      padding: (TEXT_PAD * this.scale * k) + 'px',
       color: s.color || '#1f2328',
+      transformOrigin: '0 0',
+      transform: k === 1 ? '' : `scale(${1 / k})`,
+      outlineWidth: (2 * k) + 'px',
+      borderRadius: (4 * k) + 'px',
     });
     this._growTextInput();
+  }
+
+  /**
+   * 글상자 입력칸(커서 줄)이 화상 키보드·화면 가장자리에 가리면 캔버스를 넘겨 보이게 한다.
+   * 보이는 영역 = 캔버스(떠 있는 도구 여백 제외) ∩ visualViewport (iPad 키보드가 뜨면 visualViewport 가 줄어든다)
+   */
+  _revealTextInput() {
+    const ta = this.textInput;
+    if (!this.textEdit || !ta || ta.style.display === 'none' || !this.canvas.isConnected) return;
+    const vv = window.visualViewport;
+    const c = this.canvas.getBoundingClientRect();
+    const I = this.insets;
+    const visible = {
+      top: Math.max(c.top + I.top, vv ? vv.offsetTop : 0),
+      bottom: Math.min(c.bottom - I.bottom, vv ? vv.offsetTop + vv.height : window.innerHeight),
+    };
+    if (visible.bottom - visible.top < 60) return;
+    const r = ta.getBoundingClientRect();
+    const d = revealDelta({ top: r.top, bottom: r.bottom }, visible);
+    if (d) this.scrollBy(0, d);
   }
 
   _growTextInput() {
@@ -2324,6 +2372,59 @@ function touchIntent(dist, ms, ended) {
   return ms <= TOUCH_TAP_MS ? 'tap' : 'hold';
 }
 
+/* ── 지우개·글상자·화면 맞춤 — 순수 함수 ── */
+const ERASER_PEN_PX = 8;     // 펜(Apple Pencil) 지우개 반지름 (화면 px) — 펜 끝은 정밀해 촘촘한 글씨에서 한 획만 지우게
+const ERASER_PX = 16;        // 손가락·마우스 지우개 반지름 (화면 px, 예전과 같다)
+const INPUT_MIN_FONT_PX = 16; // iOS 는 이보다 작은 글자 입력칸에 포커스하면 화면을 확대한다
+
+/** 지우개 반지름 (화면 px) — 펜은 작게, 손가락·마우스는 그대로 */
+function eraserRadiusFor(pointerType) {
+  return pointerType === 'pen' ? ERASER_PEN_PX : ERASER_PX;
+}
+
+/** 글상자 입력칸 배율 k: 실제 글자 크기 = 화면 글자 크기 × k (≥ 16px), 보이는 크기는 scale(1/k) 로 되돌린다 */
+function textInputScale(screenFontPx, min = INPUT_MIN_FONT_PX) {
+  return screenFontPx > 0 && screenFontPx < min ? min / screenFontPx : 1;
+}
+
+/**
+ * 상자(글상자 입력칸)를 보이는 영역 안으로 넣으려면 화면을 얼마나 올릴지 (화면 px, +면 내용이 위로).
+ * 아래(커서 줄)를 먼저 맞춘다 — 키보드에 가리지 않게. 위로 넘치면 내린다.
+ */
+function revealDelta(box, visible, margin = 16) {
+  const over = box.bottom - (visible.bottom - margin);
+  if (over > 0) return over;
+  const under = (visible.top + margin) - box.top;
+  return under > 0 ? -under : 0;
+}
+
+/** 페이지 폭 맞춤 배율 — 보이는 영역 box {w, h, insets} 안에 페이지 폭(pageW)이 들어가게 */
+function fitScaleFor(box, pageW, minScale, maxScale = 1.25) {
+  const I = box.insets || { left: 0, right: 0 };
+  const availW = Math.max(100, box.w - I.left - I.right - 32);
+  return Math.max(minScale, Math.min(maxScale, availW / pageW));
+}
+
+/**
+ * 화면 크기가 바뀔 때(돌리기·Split View) 보던 곳을 지킨다: 보이는 영역 가운데의 월드 점을 새 영역 가운데로.
+ * 페이지 폭 맞춤 배율로 보고 있었으면 새 폭에 다시 맞추고, 직접 확대해 두었으면 배율을 지킨다.
+ * view {scale, tx, ty}, box {w, h, insets}, fit {pageW, minScale, maxScale} → 새 view
+ */
+function anchorView(view, oldBox, newBox, fit) {
+  const center = (b) => {
+    const I = b.insets || { top: 0, right: 0, bottom: 0, left: 0 };
+    return { x: I.left + (b.w - I.left - I.right) / 2, y: I.top + (b.h - I.top - I.bottom) / 2 };
+  };
+  const oc = center(oldBox), nc = center(newBox);
+  const wx = (oc.x - view.tx) / view.scale, wy = (oc.y - view.ty) / view.scale;
+  let scale = view.scale;
+  if (fit) {
+    const was = fitScaleFor(oldBox, fit.pageW, fit.minScale, fit.maxScale);
+    if (Math.abs(view.scale - was) <= was * 0.005) scale = fitScaleFor(newBox, fit.pageW, fit.minScale, fit.maxScale);
+  }
+  return { scale, tx: nc.x - wx * scale, ty: nc.y - wy * scale };
+}
+
 function isBoxObject(s) {
   return s.tool === 'image' || s.tool === 'text' || s.tool === 'table';
 }
@@ -2629,7 +2730,9 @@ if (typeof window !== 'undefined') {
   window.DrawingEngine = DrawingEngine;
   window.HandDrawing = {
     DrawingEngine, defaultPageLayout, normalizePageLayout, A4_BODY_ASPECT, PAPERS, PAPER_DEFAULT, paperSpec,
-    input: { fingerDownAction, fingerOutcome, isPalmSuspect, touchIntent, TOUCH_TAP_SLOP, TOUCH_TAP_MS, PEN_GUARD_MS, PALM_CONTACT_PX },
+    input: { fingerDownAction, fingerOutcome, isPalmSuspect, touchIntent, TOUCH_TAP_SLOP, TOUCH_TAP_MS, PEN_GUARD_MS, PALM_CONTACT_PX,
+      eraserRadiusFor, ERASER_PEN_PX, ERASER_PX },
+    view: { textInputScale, revealDelta, fitScaleFor, anchorView, INPUT_MIN_FONT_PX },
     geom: {
       pageBodyRect, pageIndexOfBox, boxCrossesPage, snapBoxIntoPage, initialImageSize, fitSize, boxCorners, handleAt, resizeBox, rotateBox90,
       PAGE_HEADER_H, PAGE_BODY_MX, PAGE_BODY_MY, PHOTO_PAGE_FRAC, HANDLE_DOT_PX, HANDLE_HIT_PX,

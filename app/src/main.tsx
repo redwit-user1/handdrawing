@@ -1,6 +1,7 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App.tsx';
+import { startKeyboardInsets } from './lib/keyboard.ts';
 import './styles.css';
 
 // 나중에 불러오는 조각이 이미 페이지에 인라인된 스타일시트를 다시 받으려다 막히면(웹 체험판) 무시하고 계속한다.
@@ -9,6 +10,9 @@ window.addEventListener('vite:preloadError', (e) => {
   const msg = String((e as Event & { payload?: Error }).payload?.message ?? '');
   if (/preload CSS/i.test(msg)) e.preventDefault();
 });
+
+// 화상 키보드가 가리는 높이 → CSS 변수 (대화상자가 키보드 위로 비켜 앉는다)
+startKeyboardInsets();
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

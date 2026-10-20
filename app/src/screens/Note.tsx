@@ -127,6 +127,7 @@ export default function Note({ id, onBack, onOpen, onRelogin }: { id: string; on
   const [selObj, setSelObj] = useState<Stroke | null>(null);
   const [inserting, setInserting] = useState<InsertState | null>(null);
   const [orientation, setOrientation] = useState<'rail' | 'bar'>('rail');
+  const [palRoom, setPalRoom] = useState(Infinity); // 도구 막대가 쓸 수 있는 길이 (좁으면 "더보기"로 접는다)
   const [statusOpen, setStatusOpen] = useState(false);
   const [paper, setPaper] = useState('grid');
   const [paperOpen, setPaperOpen] = useState(false);
@@ -293,6 +294,7 @@ export default function Note({ id, onBack, onOpen, onRelogin }: { id: string; on
       const r = host.getBoundingClientRect();
       const o = r.height > r.width ? 'bar' : 'rail';
       setOrientation(o);
+      setPalRoom(Math.round((o === 'rail' ? r.height : r.width) - 24)); // 막대 양쪽 12px 여백
       const e = engineRef.current;
       if (!e) return;
       e.insets = o === 'rail' ? { top: 0, right: 0, bottom: 0, left: readOnlyRef.current ? 0 : 84 } : { top: 0, right: 0, bottom: readOnlyRef.current ? 0 : 88, left: 0 };
@@ -317,8 +319,8 @@ export default function Note({ id, onBack, onOpen, onRelogin }: { id: string; on
   // 선택 막대가 뜨거나 버튼이 바뀌면(폭이 달라짐) 그리기 전에 자리 잡기
   useLayoutEffect(() => { if (hasSelection) placeBar(); }, [hasSelection, selObj, placeBar]);
 
-  // 처음 열 때 페이지 폭 맞춤
-  useEffect(() => { if (loaded) engineRef.current?.fitWidth(); }, [loaded, orientation]);
+  // 처음 열 때만 페이지 폭 맞춤 — 화면을 돌리거나 폭이 바뀌면 엔진이 보던 곳(가운데)과 폭 맞춤을 지킨다 (engine.resize)
+  useEffect(() => { if (loaded) engineRef.current?.fitWidth(); }, [loaded]);
 
   const autoVersion = useCallback(async () => {
     autoVersionDue.current = false;
@@ -511,7 +513,7 @@ export default function Note({ id, onBack, onOpen, onRelogin }: { id: string; on
           <button className={`status-pill${save.kind === 'error' ? ' danger' : ''}`} onClick={() => setStatusOpen((v) => !v)} aria-expanded={statusOpen}
             data-testid="status-pill" data-online={online} data-pending={pending}>
             <span className={`dot ${online ? 'on' : 'off'}`} aria-hidden="true" />
-            <span data-testid="saved-state">{saveLabel}</span>
+            <span className="pill-label" data-testid="saved-state">{saveLabel}</span>
             {pending > 0 && <span className="pill-count" data-testid="pill-pending">올릴 버전 {pending}</span>}
             {!online && <span className="pill-off">오프라인</span>}
             {(deadline.urgent || !online) && !lock && <span className={deadline.urgent ? 'warn-text' : 'muted'}>· 기한 {deadline.text}</span>}
@@ -534,8 +536,8 @@ export default function Note({ id, onBack, onOpen, onRelogin }: { id: string; on
 
         {!readOnly && loaded && (
           <div className="pal-anchor" ref={paperRef}>
-            <button className="btn ghost" onClick={() => setPaperOpen((v) => !v)} aria-expanded={paperOpen} data-testid="paper-button" data-paper={paper}>
-              <IcPaper /> 종이
+            <button className="btn ghost bar-btn" onClick={() => setPaperOpen((v) => !v)} aria-expanded={paperOpen} data-testid="paper-button" data-paper={paper}>
+              <IcPaper /> <span className="btn-label">종이</span>
             </button>
             {paperOpen && (
               <div className="paper-pop" role="dialog" aria-label="종이 고르기" data-testid="paper-pop">
@@ -545,11 +547,11 @@ export default function Note({ id, onBack, onOpen, onRelogin }: { id: string; on
             )}
           </div>
         )}
-        <button className="btn ghost" onClick={() => setShowVersions(true)} data-testid="open-versions">
-          <IcHistory /> 버전{c?.rejected ? <span className="badge danger" aria-label={`미반영 ${c.rejected}`}>{c.rejected}</span> : null}
+        <button className="btn ghost bar-btn" onClick={() => setShowVersions(true)} data-testid="open-versions">
+          <IcHistory /> <span className="btn-label">버전</span>{c?.rejected ? <span className="badge danger" aria-label={`미반영 ${c.rejected}`}>{c.rejected}</span> : null}
         </button>
-        <button className="btn primary" disabled={readOnly || busy} onClick={() => setConfirmRelease(true)} data-testid="release">
-          <IcCheck /> 작성 완료
+        <button className="btn primary bar-btn" disabled={readOnly || busy} onClick={() => setConfirmRelease(true)} data-testid="release">
+          <IcCheck /> <span className="btn-label">작성 완료</span>
         </button>
       </header>
 
@@ -563,7 +565,7 @@ export default function Note({ id, onBack, onOpen, onRelogin }: { id: string; on
         {!loaded && <div className="canvas-loading muted">노트를 여는 중…</div>}
 
         {loaded && !readOnly && (
-          <ToolPalette engine={engineRef.current!} state={pal} orientation={orientation} onPhoto={(f) => void onPhoto(f)} onInsert={onInsert}
+          <ToolPalette engine={engineRef.current!} state={pal} orientation={orientation} room={palRoom} onPhoto={(f) => void onPhoto(f)} onInsert={onInsert}
             canUndo={history.undo} canRedo={history.redo} onChange={(next) => setPal((p) => ({ ...p, ...next }))} />
         )}
 

@@ -44,3 +44,4 @@ export const IcClock = (p: P) => <svg {...base(p)}><circle cx="12" cy="12" r="9"
 export const IcEdit = (p: P) => <svg {...base(p)}><path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16Z" /><path d="m13.5 6.5 4 4" /></svg>;
 export const IcMinus = (p: P) => <svg {...base(p)}><path d="M5 12h14" /></svg>;
 export const IcQr = (p: P) => <svg {...base(p)}><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><path d="M14 14h3v3h-3zM20 14v.01M14 20h.01M17 20h3v-3" /></svg>;
+export const IcMore = (p: P) => <svg {...base(p)}><circle cx="5" cy="12" r="1.4" fill="currentColor" /><circle cx="12" cy="12" r="1.4" fill="currentColor" /><circle cx="19" cy="12" r="1.4" fill="currentColor" /></svg>;

@@ -104,7 +104,7 @@ svg { flex: none; }
 .field input, .field select {
   display: block; width: 100%; min-height: 48px; margin-top: 6px; padding: 0 14px;
   border: 1px solid var(--line-strong); border-radius: var(--r-m); background: #fff;
-  font-size: var(--fs-m); font-weight: 400; color: var(--ink);
+  font-size: 16px; font-weight: 400; color: var(--ink); /* 16px 미만이면 iOS 가 포커스할 때 화면을 확대한다 */
 }
 .field input:focus-visible, .field select:focus-visible { outline: none; border-color: var(--accent); box-shadow: var(--focus); }
 .field input:disabled { background: var(--panel-2); color: var(--muted); }
@@ -294,8 +294,20 @@ svg { flex: none; }
 .note-screen .toast { bottom: calc(100px + var(--safe-bottom)); }
 
 /* ── 대화상자·서랍 ── */
-.dialog-backdrop { position: fixed; inset: 0; background: rgba(16, 24, 40, 0.36); display: grid; place-items: center; z-index: 40; padding: 16px; }
-.dialog { width: min(520px, 100%); max-height: 90vh; overflow: auto; background: var(--panel); border-radius: var(--r-l); padding: 24px; box-shadow: var(--shadow-pop); }
+/* 화상 키보드가 뜨면(--kb, src/lib/keyboard.ts) 바탕이 키보드 위로 줄어 대화상자가 그 안에 앉는다 */
+.dialog-backdrop {
+  position: fixed; inset: 0; top: var(--kb-top, 0px); bottom: var(--kb, 0px);
+  background: rgba(16, 24, 40, 0.36); display: grid; place-items: center; z-index: 40; padding: 16px;
+}
+.dialog {
+  width: min(520px, 100%); overflow: auto; overscroll-behavior: contain; background: var(--panel); border-radius: var(--r-l); padding: 24px; box-shadow: var(--shadow-pop);
+  max-height: min(90vh, calc(100vh - var(--kb, 0px) - var(--kb-top, 0px) - 32px));
+  max-height: min(90dvh, calc(100dvh - var(--kb, 0px) - var(--kb-top, 0px) - 32px));
+}
+/* 맨 아래 버튼 줄(취소·넣기)은 대화상자가 줄어 스크롤돼도 늘 보이게 */
+.dialog > .row.end:last-child {
+  position: sticky; bottom: 0; z-index: 1; margin: 8px -24px -24px; padding: 8px 24px 24px; background: var(--panel);
+}
 .dialog.wide { width: min(760px, 100%); }
 .dialog h2 { margin-bottom: 12px; }
 .plain-list { margin: 8px 0 0; padding-left: 20px; color: var(--ink-2); display: grid; gap: 4px; }
@@ -358,7 +370,7 @@ svg { flex: none; }
 .table-edit { display: grid; gap: 0; margin-top: 8px; max-height: 46vh; overflow: auto; border: 1px solid var(--line-strong); border-radius: var(--r-s); }
 .table-edit .cell {
   min-height: 44px; min-width: 0; padding: 0 10px; border: 0; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line);
-  background: #fff; font-size: var(--fs-m);
+  background: #fff; font-size: 16px; /* iOS 포커스 확대 방지 */
 }
 .table-edit .cell.head { background: #eef2f7; font-weight: 600; }
 .table-edit .cell:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
@@ -375,7 +387,7 @@ svg { flex: none; }
 }
 .mono-input:focus-visible { outline: none; border-color: var(--accent); box-shadow: var(--focus); }
 .tex-source { margin-top: 10px; font-size: var(--fs-s); color: var(--ink-2); }
-.tex-source summary { cursor: pointer; min-height: 32px; display: flex; align-items: center; }
+.tex-source summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; touch-action: manipulation; }
 .chip-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
 .chip-row .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 500; }
 .formula-preview {
@@ -386,14 +398,14 @@ svg { flex: none; }
 code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .92em; background: var(--panel-2); padding: 1px 4px; border-radius: 4px; }
 
 /* ── 구조식 (전체 화면) ── */
-.sheet-full { position: fixed; inset: 0; z-index: 45; background: var(--panel); display: flex; flex-direction: column; }
+.sheet-full { position: fixed; inset: 0; top: var(--kb-top, 0px); bottom: var(--kb, 0px); z-index: 45; background: var(--panel); display: flex; flex-direction: column; }
 .sheet-head {
   display: flex; align-items: center; gap: 8px; padding: calc(8px + var(--safe-top)) calc(12px + var(--safe-right)) 8px calc(8px + var(--safe-left));
   border-bottom: 1px solid var(--line);
 }
 .smiles-input {
   width: min(360px, 34vw); min-height: 44px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: var(--r-m);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 14px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 16px; /* iOS 포커스 확대 방지 */
 }
 .ketcher-host { position: relative; flex: 1; min-height: 0; }
 .ketcher-host > div { height: 100%; }
@@ -423,8 +435,49 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .
 .paper-opt.active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-strong); font-weight: 650; }
 .paper-thumb { display: block; width: 52px; height: 72px; border-radius: 3px; box-shadow: 0 1px 3px rgba(16, 24, 40, 0.14), 0 0 0 1px rgba(16, 24, 40, 0.04); }
 .paper-pop {
-  position: absolute; right: 0; top: calc(100% + 8px); z-index: 30; width: 420px; padding: 14px;
+  position: absolute; right: 0; top: calc(100% + 8px); z-index: 30; width: min(420px, calc(100vw - 24px)); padding: 14px;
   background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-m); box-shadow: var(--shadow-pop);
 }
 .paper-pop p { margin: 0 0 10px; }
 .legend-hint { font-weight: 400; margin-left: 2px; }
+
+/* ── 손가락 조작: 앱 틀은 두 번 탭 확대·지연 없이 (필기 캔버스는 touch-action: none 그대로) ── */
+.note-bar, .palette, .pal-pop, .note-card, .status-pill, .title-btn, .swatch, .width, .insert-item, .paper-opt,
+.selection-bar, .status-pop, .paper-pop, .icon-btn, .sheet-head, .check, .stepper { touch-action: manipulation; }
+
+/* ── 좁은 도구 막대 (Split View·Slide Over): 44px 버튼, 넘치는 것은 "더보기" — ToolPalette/paletteLayout.ts ── */
+.palette.compact { gap: 2px; }
+.palette.compact .pal-btn { width: 44px; height: 44px; }
+/* 팝오버를 버튼이 아니라 막대 기준으로 띄워 화면 밖으로 나가지 않게 */
+.palette.compact .pal-anchor { position: static; }
+.pal-pop { max-width: calc(100vw - 24px - var(--safe-left) - var(--safe-right)); }
+.palette.compact .ink-row { flex-wrap: wrap; justify-content: center; }
+.more-pop { max-height: min(70vh, 600px); overflow-y: auto; overscroll-behavior: contain; }
+.more-pop .insert-item.active { background: var(--accent-soft); color: var(--accent-strong); }
+.more-pop .insert-item:disabled { opacity: 0.4; cursor: default; }
+.ink-ic { display: grid; place-items: center; width: 24px; height: 24px; }
+
+/* 선택 막대가 화면보다 넓으면 줄을 바꾼다 */
+.selection-bar { max-width: calc(100% - 16px); flex-wrap: wrap; justify-content: center; }
+
+/* ── 좁은 화면의 노트 머리줄: 아이콘만, 부제 숨김, 팝오버는 화면 폭에 맞춰 ── */
+@media (max-width: 640px) {
+  .note-bar { gap: 4px; padding-right: calc(8px + var(--safe-right)); }
+  .note-bar .bar-btn { min-width: 44px; padding: 0 10px; gap: 0; }
+  .note-bar .btn-label { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+  .note-bar .note-sub { display: none; }
+  .note-bar .title-text { font-size: var(--fs-m); }
+  .status-pill { padding: 0 12px; gap: 6px; }
+  .status-pill > :not(.dot):not(.pill-label):not(.pill-count) { display: none; }
+  .status-pop, .paper-pop {
+    position: fixed; left: calc(12px + var(--safe-left)); right: calc(12px + var(--safe-right)); width: auto;
+    top: calc(64px + var(--safe-top)); max-height: calc(100vh - 80px - var(--safe-top)); overflow: auto;
+  }
+}
+@media (max-width: 420px) {
+  /* 상태 알약은 점(온라인)과 올릴 버전 수만 — 저장 상태 글은 화면 읽기용으로 남긴다 */
+  .status-pill { min-width: 44px; justify-content: center; padding: 0 10px; }
+  .status-pill .pill-label { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+  .status-pill .pill-count { font-size: 12px; }
+  .paper-pick { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

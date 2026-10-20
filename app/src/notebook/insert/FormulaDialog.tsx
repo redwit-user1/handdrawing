@@ -1,5 +1,6 @@
 import { createElement, useEffect, useMemo, useRef, useState } from 'react';
 import { Dialog } from '../../ui.tsx';
+import { watchMathKeyboard } from '../../lib/keyboard.ts';
 import type { TexImage } from './tex.ts';
 
 /**
@@ -22,6 +23,8 @@ function loadMathLive() {
     // 오프라인에서도 쓰도록 앱 안의 글꼴을 쓴다 (scripts/copy-assets.mjs 가 public/mathlive 로 복사)
     m.MathfieldElement.fontsDirectory = new URL('mathlive/fonts/', document.baseURI).href;
     m.MathfieldElement.soundsDirectory = null;
+    // 수식 화면 키보드가 대화상자의 미리보기·넣기 버튼을 덮지 않게 그 높이만큼 대화상자를 올린다
+    watchMathKeyboard();
     return m;
   });
   return mathlivePromise;
