@@ -48,14 +48,33 @@ npm run mock        # 모의 구노 서버 http://localhost:8787 (researcher1 / 
 npm run dev         # http://localhost:5173 — 브라우저에서 바로 확인(태블릿 크기로)
 ```
 
-모의 서버 화면 `http://localhost:8787/` 에서 앱이 올린 노트·버전(서버 수신 시각, 기기 작성 시각, 손글씨 이미지)을 확인할 수 있다.
-테스트용 관리 API: `POST /__admin/notes/{noteMno}/reclaim`(편집권 회수), `/__admin/notes/{noteMno}/status`(점검 요청 흉내),
-`/__admin/devices/{deviceId}/revoke`(기기 폐기), `/__admin/config {"tokenTtlMs":8000}`(오프라인 기한 단축).
-QR 연결 시험: `POST /__admin/pairing-code {"loginId":"researcher1","ttlMs":300000}` → `{code, qrPayload, expiresAt}`(웹의 "QR 띄우기" 대신.
-코드는 일회용·5분, 새로 받으면 같은 사용자의 이전 코드는 무효). 앱은 `POST /api/app/v1/devices/pair` 로 연결한다.
-`POST /__admin/config` 로 `passwordLogin`(기본 `false` — `/devices/register` 가 403 `PASSWORD_LOGIN_DISABLED`. 개발 빌드의 "비밀번호로 연결(개발용)"을 쓰려면 `true`),
-`appEnabled`(`false`면 모든 `/api/app/v1` 요청이 403 `APP_DISABLED`), `blockedDeviceIds`(403 `DEVICE_NOT_ALLOWED`)를 바꾼다.
-`/__admin/state` 의 `pairingCodes` 에서 발급·사용·무효 상태를 볼 수 있고, `/__admin/reset` 은 설정도 처음으로 되돌린다.
+모의 서버 화면 `http://localhost:8787/` 에서 과제 연결과 앱이 올린 노트·버전(서버 수신 시각, 기기 작성 시각, 손글씨 이미지)을 확인할 수 있다.
+`PORT=0` 으로 띄우면 빈 포트를 골라 첫 줄 `[mock-eln] http://localhost:<port>` 로 알린다(단위 테스트 `tests/unit/mockServer.test.mjs` 가 이렇게 띄운다).
+과제 구성원: researcher1 → 과제 3·4·5, researcher2 → 과제 3·4 (과제 5는 편집 불가 — 연결하면 `SUSPENDED`).
+
+**과제 QR 연결 시험**(계약 §0):
+1. `POST /__admin/pairing-code {"loginId":"researcher1","projectMno":3,"ttlMs":300000}` → `{appEnabled, code, qrPayload, expiresAt, expiresInSeconds, userNm, projectNm}`
+   (책임자의 과제 화면 "QR 만들기" 대신. 그 과제 구성원이 아니면 404. 코드는 일회용·5분, 같은 (과제, 연구원)으로 새로 받으면 이전 코드는 무효).
+2. 앱은 `/devices/pair/preview`(코드 안 씀) → `/devices/pair`(202 승인 대기 + `requestToken`) → `/devices/pair/status`(3초마다)로 연결한다.
+3. `POST /__admin/approve {"loginId":"researcher1"}` — 연구원의 구노 웹 승인 대신. 그 사용자의 가장 오래된 승인 대기 요청을 승인
+   (`"decision":"REJECT"` 면 거절) → `{requestMno, status}`, 대기 요청이 없으면 404. 그 뒤 상태 확인이 토큰을 준다.
+
+테스트용 관리 API(모두 `/__admin` 아래, 본문 JSON):
+
+| 경로 | 하는 일 |
+|---|---|
+| `POST /unlink {deviceId, loginId, projectMno}` | 책임자의 "연결 끊기" 대신 → `{ended}`. 그 연결로 작성 중인 노트는 WEB(이력 `연결 끊김`) |
+| `POST /projects/{projectMno}/state {editable}` | 과제 편집 가능 여부(과제 종료 `false` / 재개 `true`). 요청 때 곧바로 `SUSPENDED`·`ACTIVE` 로 보인다 |
+| `POST /projects/{projectMno}/remove-member {loginId}` | 구성원에서 뺀다. 요청 때 곧바로 `ENDED`(403 `PROJECT_NOT_LINKED`), 하루 작업이 끊김을 기록 |
+| `POST /devices/{deviceId}/last-seen {loginId, daysAgo}` | 마지막 접속을 며칠 전으로(장기 미접속 30일 시험) |
+| `POST /daily` | 하루 1번 작업 → `{suspended, resumed, ended}`. 우선순위: 끊김 → 구성원 아님(`구성원 제외`) → 장기 미접속(`장기 미접속`) → 중지(`과제 종료`) → 재개 |
+| `POST /devices/{deviceId}/revoke {userMno?}` | 마이페이지 "사용 중지" 대신: 사용 중지 + 모든 과제 연결 끊기 + 노트 WEB(`기기 사용 중지`) |
+| `POST /notes/{noteMno}/forget-images` | 노트의 저장 이미지 기록을 지운다 — 그 뒤 `reusedRefs` 는 400 `REUSED_REF_MISSING` |
+| `POST /notes/{noteMno}/reclaim {reason?}` | 편집권 회수 |
+| `POST /notes/{noteMno}/status {status}` | 점검 요청 흉내(편집 위치가 기기면 409) |
+| `POST /config {…}` | `tokenTtlMs`(오프라인 기한 단축, `null` 이면 기본), `requestTtlMs`(승인 요청 유효 시간, 기본 10분), `passwordLogin`(기본 `false` — `/devices/register` 가 403 `PASSWORD_LOGIN_DISABLED`. 개발 빌드의 "비밀번호로 연결(개발용)"을 쓰려면 `true`. 비밀번호 연결은 토큰만 주고 과제 연결은 없다), `appEnabled`(`false`면 모든 `/api/app/v1` 요청이 403 `APP_DISABLED`), `blockedDeviceIds`(403 `DEVICE_NOT_ALLOWED`) |
+| `GET /state` | `projects`·`devices`·`links`(저장 상태·`effectiveStatus`·`endReason`)·`requests`·`pairingCodes`(발급·사용·무효)·`notes`(이력·저장 이미지)·`versions`(`uploadedImages`·`reusedImages`) |
+| `POST /reset` | 상태와 설정을 처음으로 |
 
 ## 테스트
 
@@ -99,9 +118,10 @@ npm run build && GOONO_DEV_HTTP=1 npx cap sync android
 cd android && ./gradlew assembleDebug        # http 서버 접속 허용 빌드
 npm run mock                                  # PC에서 모의 서버 (0.0.0.0:8787)
 ```
-태블릿과 PC를 같은 Wi-Fi에 두고 APK 설치 → PC에서 연결 코드 발급
-(`curl -X POST http://localhost:8787/__admin/pairing-code -H 'content-type: application/json' -d '{"loginId":"researcher1"}'`)
-→ 앱 연결 화면 **코드 직접 입력**에 코드, 서버 주소 `http://<PC IP>:8787`.
+태블릿과 PC를 같은 Wi-Fi에 두고 APK 설치 → PC에서 과제 연결 코드 발급
+(`curl -X POST http://localhost:8787/__admin/pairing-code -H 'content-type: application/json' -d '{"loginId":"researcher1","projectMno":3}'`)
+→ 앱 연결 화면 **코드 직접 입력**에 코드, 서버 주소 `http://<PC IP>:8787` → 승인 대기 중에 PC에서 승인
+(`curl -X POST http://localhost:8787/__admin/approve -H 'content-type: application/json' -d '{"loginId":"researcher1"}'`).
 PC 브라우저 `http://localhost:8787/` 에서 올라온 노트를 본다. 태블릿 비행기 모드로 오프라인 작성을 시험할 수 있다.
 배포용 빌드는 반드시 `GOONO_DEV_HTTP` 없이 `npx cap sync` 한다.
 
