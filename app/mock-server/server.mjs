@@ -35,11 +35,14 @@ const USERS = [
   { userMno: 12, loginId: 'researcher1', password: 'goono1234', name: '김연구' },
   { userMno: 13, loginId: 'researcher2', password: 'goono1234', name: '이연구' },
 ];
-/** 과제. editable = 삭제·미사용 아님 + 진행 상태·유예로 편집 가능(서버 ElnProjectGracePeriodPolicy). members = 구성원 userMno */
+/**
+ * 과제. editable = 삭제·미사용 아님 + 진행 상태·유예로 편집 가능(서버 ElnProjectGracePeriodPolicy). members = 구성원 userMno,
+ * leaders = 과제 책임자(PJ_MANAGER·PJ_LEAD_RESEARCHER 또는 총괄) userMno — 모의 서버에서는 researcher1 이 세 과제의 책임자다.
+ */
 const seedProjects = () => [
-  { projectMno: 3, name: '시료 A 열처리', editable: true, members: [12, 13] },
-  { projectMno: 4, name: '세포 배양 조건 최적화', editable: true, members: [12, 13] },
-  { projectMno: 5, name: '2025 종료 과제 (읽기 전용)', editable: false, members: [12] },
+  { projectMno: 3, name: '시료 A 열처리', editable: true, members: [12, 13], leaders: [12] },
+  { projectMno: 4, name: '세포 배양 조건 최적화', editable: true, members: [12, 13], leaders: [12] },
+  { projectMno: 5, name: '2025 종료 과제 (읽기 전용)', editable: false, members: [12], leaders: [12] },
 ];
 
 // 연결 코드: 8자, 0·O·1·I·L 제외. 저장·비교는 대문자로 바꾸고 '-'·공백을 지운 값.
@@ -84,6 +87,7 @@ const defaultConfig = () => ({
   offlineGraceDays: Number(process.env.OFFLINE_GRACE_DAYS || 14),
   tokenTtlMs: null,
   requestTtlMs: null, // 승인 요청 유효 시간(기본 10분) — 시험용으로 줄인다
+  deliveryTtlMs: null, // 승인 뒤 토큰 수령 기한(기본 승인 + 10분) — 시험용으로 줄인다
   passwordLogin: false, // 서버 설정 app.device.password-login.enabled — 기본 꺼짐(QR 연결만). 개발 중 비밀번호 화면을 쓰려면 /__admin/config 로 켠다
   appEnabled: true, // 기관이 태블릿 연결을 켰는가
   blockedDeviceIds: [],
@@ -130,6 +134,9 @@ function effectiveStatus(link) {
   return 'ACTIVE';
 }
 
+/** 살아 있는 연결 = 요청 때 상태(effectiveStatus)가 ACTIVE·SUSPENDED 인 연결(저장 상태가 아니다) */
+const liveLinksOf = (device) => linksOf(device).filter((l) => effectiveStatus(l) !== 'ENDED');
+
 /**
  * 새 토큰 발급. presentedHash 는 갱신(/devices/refresh)일 때 요청이 보낸 토큰의 해시 — 현재 토큰이면 그것을 10분 동안 이전 토큰으로
  * 남기고, 유예 중인 이전 토큰이면(응답을 못 받은 재시도) 이전 토큰·유예 기한은 그대로 둔다. 연결(승인 수령·register)은 이전 토큰을 지운다.
@@ -164,10 +171,14 @@ function upsertDevice(info, userMno) {
   Object.assign(d, { name: info.name, platform: info.platform, model: info.model ?? null, appVersion: info.appVersion ?? null });
   return d;
 }
-/** 토큰을 새로 주면서 사용 중지를 푼다(서버 issueToken) */
+/**
+ * 토큰을 새로 주면서 사용 중지를 풀고 마지막 접속을 지금으로(서버 issueToken — 오래 쉰 묶음을 다시 연결해도 다음 하루 작업이
+ * 장기 미접속으로 끊지 않게).
+ */
 function deliverToken(device) {
   device.revoked = false;
   device.revokedAt = null;
+  device.lastSeenAt = now();
   return issueToken(device);
 }
 
@@ -253,24 +264,36 @@ function upsertLink(device, projectMno, issuerMno) {
 /** 지금 결과(서버 AppLinkRules.pollOutcome): PENDING | APPROVED | REJECTED | EXPIRED */
 function pollOutcome(r) {
   if (r.status === 'PENDING') return r.expiresAt > now() ? 'PENDING' : 'EXPIRED';
-  if (r.status === 'APPROVED') return r.decidedAt.getTime() + DELIVERY_TTL_MS > Date.now() ? 'APPROVED' : 'EXPIRED';
+  if (r.status === 'APPROVED') return r.decidedAt.getTime() + (config.deliveryTtlMs ?? DELIVERY_TTL_MS) > Date.now() ? 'APPROVED' : 'EXPIRED';
   if (r.status === 'REJECTED') return 'REJECTED';
   return 'EXPIRED'; // EXPIRED · CANCELED
 }
 /** 저장 상태(기한 지난 PENDING 은 EXPIRED 로 본다) */
 const requestStatus = (r) => (r.status === 'PENDING' && r.expiresAt <= now() ? 'EXPIRED' : r.status);
 const livePending = (r) => r.status === 'PENDING' && r.expiresAt > now();
+/** 확인 번호(계약 §0.7): REQUEST_TOKEN_HASH(소문자 hex) 앞 8자를 부호 없는 정수로 읽어 10000 으로 나눈 나머지, 4자리(앞 0 채움) */
+const confirmNumber = (r) => String(parseInt(r.tokenHash.slice(0, 8), 16) % 10000).padStart(4, '0');
 function createRequest(fields) {
   const requestToken = crypto.randomBytes(24).toString('base64url');
   const r = { requestMno: ++state.seq.request, issuerMno: null, projectMno: null, deviceMno: null, ...fields,
     tokenHash: sha256hex(requestToken), status: 'PENDING', expiresAt: new Date(Date.now() + (config.requestTtlMs ?? REQUEST_TTL_MS)),
     decidedAt: null, createdAt: now() };
   state.requests.set(r.requestMno, r);
-  return { status: 'PENDING', requestToken, expiresAt: iso(r.expiresAt), expiresInSeconds: secondsLeft(r.expiresAt) };
+  return { status: 'PENDING', requestToken, expiresAt: iso(r.expiresAt), expiresInSeconds: secondsLeft(r.expiresAt), confirmNumber: confirmNumber(r) };
 }
 function cancelPending(match) {
   for (const r of state.requests.values()) {
     if (livePending(r) && match(r)) { r.status = 'CANCELED'; r.decidedAt = now(); }
+  }
+}
+/**
+ * 사용 중지 때 그 기기 묶음(기기 ID, 연구원)의 진행 중 요청을 CANCELED 로 — 기한 안 PENDING 과 수령 기한 안 APPROVED(이미 한 번
+ * 받아 간 것 포함). 그 뒤 상태 확인은 410 이라, 도둑의 재인증·잘못 승인한 요청으로 토큰을 받아 사용 중지를 풀 수 없다.
+ */
+function cancelBundleRequests(device) {
+  for (const r of state.requests.values()) {
+    if (r.deviceId !== device.deviceId || r.userMno !== device.userMno) continue;
+    if (livePending(r) || pollOutcome(r) === 'APPROVED') { r.status = 'CANCELED'; r.decidedAt = now(); }
   }
 }
 /** 구노 웹 승인·거절(서버 decideRequest). 연구원 본인의 PENDING·기한 안 요청만. */
@@ -287,7 +310,7 @@ function decideRequest(r, approve) {
     r.deviceMno = device.deviceMno;
     // 같은 기기를 다른 연구원이 연결 → 이전 연구원 묶음의 살아 있는 연결을 모두 끊고 노트를 WEB 으로
     for (const other of state.devices.values()) {
-      if (other.deviceId === r.deviceId && other.userMno !== r.userMno && linksOf(other).some((l) => l.status !== 'ENDED')) {
+      if (other.deviceId === r.deviceId && other.userMno !== r.userMno && liveLinksOf(other).length) {
         endAllLinks(other, 'HANDOVER', r.userMno);
       }
     }
@@ -364,8 +387,13 @@ api.post('/devices/register', (req, res) => {
   const user = USERS.find((u) => u.loginId === loginId && u.password === password);
   if (!user) return failed(req, err(res, 401, 'INVALID_CREDENTIALS', '아이디 또는 비밀번호가 올바르지 않습니다.'));
   if ((config.blockedDeviceIds || []).includes(device.id)) return err(res, 403, 'DEVICE_NOT_ALLOWED', '이 기기는 연결할 수 없습니다.');
+  // 사용 중지를 풀거나 과제 연결을 되살리는 길이 아니다 — 그건 과제 QR + 승인, 재인증 + 승인으로만
+  const existing = state.devices.get(deviceKey(device.id, user.userMno));
+  if (existing?.revoked) return err(res, 401, 'DEVICE_REVOKED', '이 기기는 사용이 중지되었습니다. 과제 QR로 다시 연결하세요.');
+  if (existing && liveLinksOf(existing).length) {
+    return err(res, 409, 'DEVICE_ALREADY_LINKED', '이 기기는 과제에 연결되어 있습니다. 다시 연결(재인증)을 쓰세요.');
+  }
   const d = upsertDevice(device, user.userMno);
-  d.lastSeenAt = now();
   res.json({ ...deliverToken(d), user: userView(user) });
 });
 
@@ -430,7 +458,7 @@ api.post('/devices/reauth', (req, res) => {
   if (!found) return err(res, 401, 'UNAUTHORIZED', '알 수 없는 토큰입니다.');
   const { device } = found;
   if (device.revoked) return err(res, 401, 'DEVICE_REVOKED', '이 기기는 사용이 중지되었습니다.');
-  const live = linksOf(device).filter((l) => l.status !== 'ENDED');
+  const live = liveLinksOf(device);
   if (!live.length) return err(res, 403, 'NO_PROJECT_LINKS', '연결된 과제가 없습니다. 연구책임자에게 과제 QR을 요청하세요.');
   cancelPending((r) => r.kind === 'REAUTH' && r.deviceMno === device.deviceMno);
   const pending = createRequest({ kind: 'REAUTH', userMno: device.userMno, deviceMno: device.deviceMno, deviceId: device.deviceId,
@@ -619,7 +647,7 @@ admin.get('/state', (_req, res) => res.json({
     return { ...l, deviceId: d.deviceId, userMno: d.userMno, loginId: userOf(d.userMno).loginId,
       projectNm: projectOf(l.projectMno).name, effectiveStatus: effectiveStatus(l) };
   }),
-  requests: [...state.requests.values()].map(({ tokenHash, ...r }) => ({ ...r, status: requestStatus(r),
+  requests: [...state.requests.values()].map(({ tokenHash, ...r }) => ({ ...r, status: requestStatus(r), confirmNumber: confirmNumber({ tokenHash }),
     loginId: userOf(r.userMno).loginId, projectNm: r.projectMno == null ? null : projectOf(r.projectMno).name })),
   pairingCodes: [...state.pairingCodes.values()].map((c) => ({ code: c.code, userMno: c.userMno, projectMno: c.projectMno,
     createdAt: iso(c.createdAt), expiresAt: iso(c.expiresAt), usedAt: iso(c.usedAt), invalidatedAt: iso(c.invalidatedAt) })),
@@ -636,8 +664,8 @@ admin.post('/config', (req, res) => {
   for (const k of ['passwordLogin', 'appEnabled']) {
     if (b[k] !== undefined && typeof b[k] !== 'boolean') return err(res, 400, 'BAD_REQUEST', `${k}는 boolean이어야 합니다.`);
   }
-  if (b.requestTtlMs !== undefined && b.requestTtlMs !== null && !(Number.isFinite(b.requestTtlMs) && b.requestTtlMs > 0)) {
-    return err(res, 400, 'BAD_REQUEST', 'requestTtlMs는 양수이거나 null 이어야 합니다.');
+  for (const k of ['requestTtlMs', 'deliveryTtlMs']) {
+    if (b[k] !== undefined && b[k] !== null && !(Number.isFinite(b[k]) && b[k] > 0)) return err(res, 400, 'BAD_REQUEST', `${k}는 양수이거나 null 이어야 합니다.`);
   }
   config = { ...config, ...b };
   res.json(config);
@@ -661,7 +689,7 @@ admin.post('/pairing-code', (req, res) => {
     code = Array.from({ length: CODE_LENGTH }, () => CODE_ALPHABET[crypto.randomInt(CODE_ALPHABET.length)]).join('');
   } while (state.pairingCodes.has(code));
   const expiresAt = new Date(Date.now() + (ttlMs ?? PAIRING_TTL_MS));
-  state.pairingCodes.set(code, { code, userMno: user.userMno, projectMno, issuerMno: null, createdAt: now(), expiresAt, usedAt: null, invalidatedAt: null });
+  state.pairingCodes.set(code, { code, userMno: user.userMno, projectMno, issuerMno: project.leaders[0], createdAt: now(), expiresAt, usedAt: null, invalidatedAt: null });
   const server = process.env.PUBLIC_URL || `${req.protocol}://${req.get('host')}`;
   const qrPayload = `goono-note://pair?server=${encodeURIComponent(server)}&code=${encodeURIComponent(displayCode(code))}`;
   // 실제 웹 API 와 같은 필드. 테스트용이라 기능이 꺼져 있어도 코드는 만든다(실제 웹은 { appEnabled: false } 만)
@@ -678,16 +706,22 @@ admin.post('/approve', (req, res) => {
   if (!r) return err(res, 404, 'NOT_FOUND', '승인 대기 중인 요청이 없습니다.');
   const out = decideRequest(r, decision === 'APPROVE');
   if (out.error) return err(res, ...out.error);
-  res.json({ requestMno: r.requestMno, status: out.status });
+  res.json({ requestMno: r.requestMno, status: out.status, confirmNumber: confirmNumber(r) });
 });
-/** 연구책임자의 "연결 끊기"(POST /api/eln/app/project/unlink) 대신. 이미 끊겼으면 ended 0. */
+/**
+ * 연구책임자의 "연결 끊기"(POST /api/eln/app/project/unlink) 대신. 이미 끊겼으면 ended 0.
+ * 이력 작성자 = 책임자(leaderLoginId, 없으면 그 과제의 첫 책임자 researcher1). 책임자가 아니면 403.
+ */
 admin.post('/unlink', (req, res) => {
-  const { deviceId, loginId, projectMno } = req.body || {};
+  const { deviceId, loginId, projectMno, leaderLoginId } = req.body || {};
   const user = userByLogin(loginId);
   const device = user && state.devices.get(deviceKey(deviceId, user.userMno));
   const link = device && linkFor(device, projectMno);
   if (!link) return err(res, 404, 'NOT_FOUND', '연결이 없습니다.');
-  res.json({ ended: endLink(link, 'LEADER', SYSTEM_ACTOR) });
+  const project = projectOf(projectMno);
+  const leaderMno = leaderLoginId === undefined ? project.leaders[0] : userByLogin(leaderLoginId)?.userMno;
+  if (!project.leaders.includes(leaderMno)) return err(res, 403, 'FORBIDDEN', '과제 책임자만 연결을 끊을 수 있습니다.');
+  res.json({ ended: endLink(link, 'LEADER', leaderMno) });
 });
 /** 과제 편집 가능 여부(진행 종료·유예 만료·삭제 등 → false, 유예 연장·재개 → true) */
 admin.post('/projects/:projectMno/state', (req, res) => {
@@ -697,7 +731,11 @@ admin.post('/projects/:projectMno/state', (req, res) => {
   project.editable = req.body.editable;
   res.json(project);
 });
-/** 구성원에서 뺀다. 요청 시 곧바로 그 연결이 ENDED 로 보이고, 하루 작업이 끊김(구성원 제외)을 기록한다. */
+/**
+ * 구성원에서 뺀다. 요청 시 곧바로 그 연결이 ENDED 로 보이고(403 PROJECT_NOT_LINKED), 하루 작업이 끊김(구성원 제외)을 기록한다.
+ * 실제 서버와 다른 점: 서버는 과제 화면의 구성원 삭제(deleteProjectMembers) 훅에서 그 자리에서 끊는다(이력 작성자 = 삭제한 사용자).
+ * 이 경로는 그 훅을 거치지 않고 빠진 경우(하루 작업이 작성자 0 으로 기록)를 흉내 낸다.
+ */
 admin.post('/projects/:projectMno/remove-member', (req, res) => {
   const project = projectOf(Number(req.params.projectMno));
   const user = userByLogin(req.body?.loginId);
@@ -778,6 +816,7 @@ admin.post('/devices/:deviceId/revoke', (req, res) => {
   for (const d of found) {
     Object.assign(d, { revoked: true, revokedAt: now(), prevValidUntil: null }); // 갱신 유예도 끝낸다(이전 토큰은 DEVICE_REVOKED)
     ended += endAllLinks(d, 'REVOKED', d.userMno);
+    cancelBundleRequests(d);
   }
   res.json({ ok: true, ended });
 });

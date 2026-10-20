@@ -50,6 +50,12 @@ Goono-ELN 서버 구현의 기준이며, 개발·테스트용 구현은 `app/moc
 - 웹 API(`/api/eln/app/…`)는 기존 웹 로그인 세션·CSRF 규칙과 웹 공통 JSON 응답(`ViewConstant.JSON_VIEW` — `resultCode` 같은 웹 공통
   필드가 더 붙는다)을 따르고, 오류는 `S2RuntimeException` 메시지(웹 공통 오류 응답)다. 이 문서의 웹 응답 예시는 공통 필드를 뺀 것이다.
   웹 화면은 사용자가 넣은 값(기기 이름·모델·과제명·이름)을 모두 텍스트(`.text()`)로 넣는다.
+- **기기 ID(`device.id`, `PL_APP_DEVICE.DEVICE_ID`)는 비공개 값이다** — 웹 화면·웹 API 응답, 그리고 다른 사용자에게 가는 어떤 응답에도 넣지
+  않는다(다른 연구원 연결 `HANDOVER`가 이 값으로 같은 기기를 알아보므로, 남이 알면 같은 ID로 요청을 흉내 낼 수 있다). 웹은 기기 관리번호
+  (`deviceMno`)·기기 이름으로만 기기를 가리킨다. 앱 API에서 이 값이 나가는 곳은 그 기기 묶음 자신의 노트 응답(`editLocation.deviceId`)뿐이다.
+- **살아 있는 연결** = 요청 때 상태(§0.12 `effectiveStatus`)가 `ACTIVE` 또는 `SUSPENDED`인 연결이다(저장 상태가 아니다 — 저장 상태가 `ACTIVE`라도
+  연구원이 구성원에서 빠졌으면 살아 있지 않다). 재인증(§0.10), 승인 창의 `linkedProjectNms`(§0.4), 다른 연구원 연결(§0.4 `HANDOVER`),
+  비밀번호 등록(§1)이 모두 이 정의를 쓴다.
 
 ### 오류 코드 한눈에 (앱이 보이는 문구)
 
@@ -176,12 +182,14 @@ Goono-ELN 서버 구현의 기준이며, 개발·테스트용 구현은 `app/moc
   "requestMno": 77,
   "kind": "LINK|REAUTH",
   "projectNm": "시료 A 열처리",     // LINK: 연결할 과제, REAUTH: null
-  "linkedProjectNms": [],            // REAUTH: 그 기기 묶음의 살아 있는(ACTIVE·SUSPENDED) 연결 과제 이름(이름순), LINK: []
+  "linkedProjectNms": [],            // REAUTH: 그 기기 묶음의 살아 있는 연결(요청 때 상태 ACTIVE·SUSPENDED) 과제 이름(이름순), LINK: []
   "deviceNm": "연구실 iPad", "platform": "ios", "model": "iPad14,5",
   "requestedAt": "…Z",
-  "expiresInSeconds": 540
+  "expiresInSeconds": 540,
+  "confirmNumber": "0427"            // 확인 번호(§0.7) — 앱 대기 화면과 같은 값
 } ] }
 ```
+사용 중지(§0.5)로 취소된 요청은 목록에서 빠진다.
 기능 꺼짐 → `{ "appEnabled": false, "requests": [] }`.
 
 `POST /api/eln/app/pairing-requests/decide`
@@ -201,8 +209,10 @@ Goono-ELN 서버 구현의 기준이며, 개발·테스트용 구현은 `app/moc
 - **거절**: 요청 상태만 `REJECTED`(기기 묶음·연결을 만들지 않는다).
 - 기능 꺼짐 → `{ "appEnabled": false }`만(결정하지 않는다).
 - 대시보드 승인 창(정확히, `{HH:mm}` = 요청 시각): LINK `{과제명} 과제에 태블릿 '{기기 이름}'({플랫폼} · {모델})을 연결할까요? 요청 시각 {HH:mm}`,
-  REAUTH `태블릿 '{기기 이름}'({플랫폼} · {모델})을 다시 연결할까요? 연결된 과제: {과제명, …} 요청 시각 {HH:mm}` + `승인`·`거절`.
-  요청이 여럿이면 하나씩 차례로 띄운다. 만료 오류면 안내 후 다음 요청.
+  REAUTH `태블릿 '{기기 이름}'({플랫폼} · {모델})을 다시 연결할까요? 연결된 과제: {과제명, …} 요청 시각 {HH:mm}`, 그 아래 `확인 번호 {confirmNumber}`와
+  `태블릿 화면의 확인 번호와 같을 때만 승인하세요.` + `승인`·`거절`. 요청이 여럿이면 하나씩 차례로 띄운다. 만료 오류면 안내 후 다음 요청.
+- **확인 번호 규칙**: 연구원은 승인 창의 확인 번호가 **자기 태블릿 대기 화면의 확인 번호와 같을 때만** 승인한다. 다르면(먼저 QR을 찍은 다른
+  사람의 비슷한 요청, 남이 보낸 재인증 등) 거절한다. 서버는 번호를 입력받지 않는다 — 사람이 두 화면을 맞춰 보는 확인이다.
 
 ### 0.5 내 기기(마이페이지, 웹 · 본인)
 
@@ -210,7 +220,10 @@ Goono-ELN 서버 구현의 기준이며, 개발·테스트용 구현은 `app/moc
   (그 기기 묶음의 모든 연결, 요청 시점 상태, 이름순)를 더한다.
 - `POST /api/eln/app/revokeDevice` — 사용 중지(`DEVICE_REVOKED`)하면서 그 기기 묶음의 **모든 과제 연결을 끊고**(사유 `REVOKED`) 그 묶음이
   편집 위치인 노트를 모두 `WEB`으로(이력 `기기 사용 중지`). 확인 문구 `이 기기의 모든 과제 연결이 끊기고, 기기에서 작성 중인 노트는 웹으로 돌아옵니다.`
-  다시 쓰려면 과제 QR + 승인부터.
+  같은 트랜잭션에서 그 기기 묶음(같은 기기 ID·같은 연구원)의 **진행 중 요청을 모두 `CANCELED`로** 바꾼다 — 기한 안의 `PENDING`(LINK·REAUTH)과
+  **수령 기한 안의 `APPROVED`**(이미 한 번 토큰을 받아 간 것 포함). 그래서 분실·도난 기기가 보낸 재인증이나 잘못 승인한 요청의 상태 확인은 그 뒤
+  410 `PAIRING_EXPIRED`이고, 토큰을 받아 사용 중지를 풀 수 없다(§0.8).
+  다시 쓰려면 과제 QR + 승인부터 — 사용 중지 **뒤에** 만든 요청은 보통대로 승인·토큰 수령이 되고 그때 사용 중지가 풀린다.
 - **삭제**: `POST /api/eln/app/pairing-code`(마이페이지에서 연구원이 스스로 QR 발급) — 없어졌다(404). 마이페이지 메뉴 이름은 `내 태블릿`.
 
 ### 0.6 미리보기 `POST /devices/pair/preview` (앱 · 익명)
@@ -249,6 +262,7 @@ Goono-ELN 서버 구현의 기준이며, 개발·테스트용 구현은 `app/moc
   "requestToken": "…",          // 불투명 문자열. 서버는 해시만 저장. 상태 확인·취소에만 쓴다
   "expiresAt": "…Z",            // 승인 요청 기한(만든 때 + 10분)
   "expiresInSeconds": 600,
+  "confirmNumber": "0427",      // 확인 번호 — 대기 화면과 웹 승인 창에 함께 보인다
   "project": { "projectMno": 3, "name": "시료 A 열처리" },
   "user": { "userMno": 12, "loginId": "researcher1", "name": "김연구" }
 }
@@ -268,7 +282,10 @@ Goono-ELN 서버 구현의 기준이며, 개발·테스트용 구현은 `app/moc
 - **평가 순서**: 403 `APP_DISABLED` → 400 `BAD_REQUEST` → 429 → 401 `INVALID_PAIRING_CODE` → 403 `DEVICE_NOT_ALLOWED`(예약) →
   202(코드 사용 처리 + 같은 (기기 ID, 연구원, 과제)의 이전 PENDING 요청을 `CANCELED`로 + 승인 요청 생성).
 - 이 단계에서는 **기기 묶음도 연결도 토큰도 만들지 않는다**(승인 때 만든다, §0.4). 요청은 연구원 본인의 대시보드 승인 창에 뜬다.
-- 앱 대기 화면(정확히): 제목 `구노 웹에서 승인을 기다리는 중` + `남은 시간 m:ss`(`expiresInSeconds`로 센다) + `취소`.
+- **확인 번호(`confirmNumber`)**: 요청에서 정해지는 4자리 숫자 문자열 — `REQUEST_TOKEN_HASH`(요청 토큰의 SHA-256, 소문자 hex 64자)의 앞 8자를
+  부호 없는 32비트 정수로 읽어 10000으로 나눈 나머지를 4자리로(앞을 0으로 채움). 같은 요청이면 앱 응답(§0.7·§0.10)과 웹 목록(§0.4)이 같은 값이다.
+  저장하지 않고 해시에서 계산한다.
+- 앱 대기 화면(정확히): 제목 `구노 웹에서 승인을 기다리는 중` + `확인 번호 {confirmNumber}` + `남은 시간 m:ss`(`expiresInSeconds`로 센다) + `취소`.
 
 ### 0.8 승인 상태 확인 `POST /devices/pair/status` (앱 · 익명)
 
@@ -287,13 +304,14 @@ Goono-ELN 서버 구현의 기준이며, 개발·테스트용 구현은 `app/moc
 | 401 | `UNAUTHORIZED` | 모르는 요청 토큰 |
 | 403 | `PAIRING_REJECTED` | 연구원이 거절함 |
 | 403 | `APP_DISABLED` | 기관이 태블릿 연결을 끔 |
-| 410 | `PAIRING_EXPIRED` | 승인 없이 요청 기한(10분)이 지남, 승인됐지만 **토큰 수령 기한**이 지남, 또는 취소된 요청(같은 기기·과제로 다시 요청해 취소된 것 포함) |
+| 410 | `PAIRING_EXPIRED` | 승인 없이 요청 기한(10분)이 지남, 승인됐지만 **토큰 수령 기한**이 지남, 또는 취소된 요청(앱의 취소, 같은 기기·과제로 다시 요청해 취소된 것, **사용 중지로 취소된 것**(§0.5) 포함) |
 
 - **결과 판정**(서버 `pollOutcome`): `PENDING`이고 기한 안 → PENDING / `PENDING`인데 기한 지남 → EXPIRED / `APPROVED`이고 **승인 시각 + 10분**
   안 → APPROVED / 그 뒤 → EXPIRED / `REJECTED` → REJECTED / `EXPIRED`·`CANCELED` → EXPIRED.
 - **토큰은 APPROVED 응답에서만** 준다. 수령 기한 안의 상태 확인마다 **새 토큰**을 발급한다(앞 토큰·갱신 유예 토큰은 무효 — 승인 직후 응답을
-  잃은 앱이 다시 확인해도 받을 수 있게). 토큰을 줄 때 그 기기 묶음의 **사용 중지가 풀린다**(분실 신고한 기기의 옛 토큰은 되살아나지 않는다 —
-  새 토큰만 쓸 수 있다).
+  잃은 앱이 다시 확인해도 받을 수 있게). 토큰을 줄 때 그 기기 묶음의 **사용 중지가 풀리고** `LAST_SEEN_DT`가 지금으로 바뀐다(오래 쉰 묶음을
+  다시 연결해도 다음 하루 작업이 장기 미접속으로 끊지 않게). 분실 신고한 기기의 옛 토큰은 되살아나지 않는다 — 새 토큰만 쓸 수 있고, 사용 중지
+  전에 만든 요청은 사용 중지 때 취소되므로(§0.5) 사용 중지를 풀 수 있는 것은 사용 중지 **뒤에** 만든 요청의 승인뿐이다.
 - APPROVED 뒤 앱은 기존 연결 처리와 같다: 같은 계정이면 기기 데이터를 이어 쓰고, `/bootstrap`으로 연결된 과제를 받는다.
 - 요청 토큰은 추측할 수 없는 값이므로 이 경로·취소의 401은 IP 실패 횟수(§0.11)에 넣지 않는다.
 
@@ -315,8 +333,9 @@ Goono-ELN 서버 구현의 기준이며, 개발·테스트용 구현은 `app/moc
 요청 {}
 응답 202 {
   "status": "PENDING", "requestToken": "…", "expiresAt": "…Z", "expiresInSeconds": 600,
+  "confirmNumber": "0427",                                          // 확인 번호(§0.7) — 대기 화면에 보인다
   "user": { "userMno": 12, "loginId": "researcher1", "name": "김연구" },
-  "projects": [ { "projectMno": 3, "name": "시료 A 열처리" } ]   // 살아 있는 연결(ACTIVE·SUSPENDED), 이름순
+  "projects": [ { "projectMno": 3, "name": "시료 A 열처리" } ]   // 살아 있는 연결(요청 때 상태 ACTIVE·SUSPENDED), 이름순
 }
 ```
 
@@ -324,13 +343,14 @@ Goono-ELN 서버 구현의 기준이며, 개발·테스트용 구현은 `app/moc
 |---|---|---|
 | 401 | `UNAUTHORIZED` | 토큰이 없거나 모르는 토큰(현재 토큰도, 유예 중인 이전 토큰도 아님) |
 | 401 | `DEVICE_REVOKED` | 사용 중지된 기기 묶음 — 과제 QR부터 |
-| 403 | `NO_PROJECT_LINKS` | 그 기기 묶음에 살아 있는(`ACTIVE`·`SUSPENDED`) 연결이 없음 — 과제 QR부터 |
+| 403 | `NO_PROJECT_LINKS` | 그 기기 묶음에 살아 있는 연결(요청 때 상태 `ACTIVE`·`SUSPENDED` — 구성원에서 빠진 과제는 저장 상태와 관계없이 아님)이 없음 — 과제 QR부터 |
 | 403 | `APP_DISABLED` | 기관이 태블릿 연결을 끔 |
 
 - **평가 순서**: 403 `APP_DISABLED` → 401 `UNAUTHORIZED` → 401 `DEVICE_REVOKED` → 403 `NO_PROJECT_LINKS` → 202(이 기기 묶음의 이전
   PENDING 재인증을 `CANCELED`로 + 재인증 요청 생성). 토큰의 **기한은 보지 않는다**.
 - 재인증 요청은 그 기기 묶음(기기 ID, 연구원)에 묶이고, 연구원 본인 대시보드에 REAUTH 승인 창이 뜬다(§0.4). 상태 확인·취소는 §0.8·§0.9와
-  같다. 승인되면 새 토큰이 발급되고 **살아 있는 과제 연결이 모두 그대로** 쓰인다(책임자 재발급 불필요).
+  같다. 승인되면 새 토큰이 발급되고 **살아 있는 과제 연결이 모두 그대로** 쓰인다(책임자 재발급 불필요). 새 토큰을 받으면 재인증에 쓴 앞 토큰은
+  무효다(그 토큰으로 다시 재인증해도 401 `UNAUTHORIZED`).
 
 ### 0.11 연결 실패 제한·클라이언트 IP
 
@@ -366,16 +386,16 @@ Goono-ELN 서버 구현의 기준이며, 개발·테스트용 구현은 `app/moc
 | 경우 | 언제 | 연결 | 되돌리는 노트 | 이력 내용(정확히) | 작성자 |
 |---|---|---|---|---|---|
 | 책임자가 끊음 | §0.3 | ENDED `LEADER` | 그 과제 | `연결 끊김` | 책임자 |
-| 구성원 제외 | 과제 구성원 삭제 직후 + 하루 작업 | ENDED `MEMBER_REMOVED` | 그 과제 | `구성원 제외` | 삭제한 사용자 / `0` |
+| 구성원 제외 | 과제 화면의 구성원 삭제 직후(그 자리에서) + 다른 경로로 빠진 것은 하루 작업 | ENDED `MEMBER_REMOVED` | 그 과제 | `구성원 제외` | 삭제한 사용자 / 작업은 `0` |
 | 과제 편집 불가 | 하루 작업 | **SUSPENDED** | 그 과제 | `과제 종료` | `0` |
 | 다른 연구원이 같은 기기 연결 | 그 연결 승인 때(§0.4) | 이전 연구원 묶음의 살아 있는 연결 모두 ENDED `HANDOVER` | 이전 연구원 묶음의 모든 노트 | `다른 연구원이 기기 연결` | 승인한 연구원 |
 | 장기 미접속 | 하루 작업 | ENDED `INACTIVE` | 그 과제 | `장기 미접속` | `0` |
-| 사용 중지 | 마이페이지 §0.5 | 그 묶음의 살아 있는 연결 모두 ENDED `REVOKED` | 그 묶음의 모든 노트 | `기기 사용 중지` | 본인 |
+| 사용 중지 | 마이페이지 §0.5 | 그 묶음의 끊기지 않은 연결 모두 ENDED `REVOKED` + 진행 중 요청 모두 `CANCELED` | 그 묶음의 모든 노트 | `기기 사용 중지` | 본인 |
 
 - **재개**: 과제가 다시 편집 가능해지면(유예 연장·재개) 하루 작업이 `SUSPENDED` → `ACTIVE`로 되돌린다. **새 QR이 필요 없다**. 노트는 이미
   `WEB`이므로 새 노트부터 다시 쓴다.
 - **장기 미접속**: `COALESCE(LAST_SEEN_DT, CREATE_DT) < NOW() - INTERVAL 30 DAY`(DB 시각)인 기기 묶음의 연결. `LAST_SEEN_DT`는 기기 토큰으로
-  인증된 요청마다(그리고 승인 토큰 수령 때) 갱신된다.
+  인증된 요청마다, 그리고 승인 토큰을 줄 때(§0.8)와 비밀번호 등록 토큰을 줄 때(§1) 갱신된다.
 - **하루 1번 작업**(서버 `app.device.link-job.cron`, 기본 `0 40 3 * * *`): 저장 상태가 `ACTIVE`·`SUSPENDED`인 연결마다 아래 **우선순위로 하나만**
   한다 — ① ENDED → 아무것도 안 함 ② 구성원 아님 → 끊음(`MEMBER_REMOVED`) ③ 장기 미접속 → 끊음(`INACTIVE`) ④ `ACTIVE`이고 과제 편집 불가 →
   중지 ⑤ `SUSPENDED`이고 과제 편집 가능 → 재개. 상태 바꾸기는 조건부 UPDATE이고 0건이면 노트·이력을 건드리지 않는다(다시 돌려도 안전).
@@ -391,8 +411,15 @@ Goono-ELN 서버 구현의 기준이며, 개발·테스트용 구현은 `app/moc
 인증 없음. 구노 계정의 아이디·비밀번호로 기기 토큰을 받는다. **서버 설정
 `app.device.password-login.enabled`가 켜졌을 때만** 동작하며, 꺼져 있으면 403 `PASSWORD_LOGIN_DISABLED`.
 운영 서버의 기본값은 꺼짐이고, 앱의 비밀번호 화면도 개발·체험 빌드(`ALLOW_DEMO`)에만 보인다.
-**토큰만 주고 과제 연결은 만들지 않는다** — 연결은 과제 QR + 승인으로만 생긴다. 이 토큰만 가진 기기의 `/bootstrap` `projects`는 비어 있고
-노트를 만들 수 없다(403 `PROJECT_NOT_LINKED`).
+**토큰만 주고 과제 연결은 만들지도 되살리지도 않는다** — 연결은 과제 QR + 승인으로만 생기고, 살아 있는 연결을 다시 쓰는 것은 재인증(§0.10)
++ 승인으로만 한다. 사용 중지도 풀지 않는다. 그래서 (기기 ID, 연구원) 묶음에 따라:
+
+| 묶음 | 결과 |
+|---|---|
+| 없음 | 새 묶음 + 토큰. `/bootstrap` `projects`는 `[]`, 노트를 만들 수 없다(403 `PROJECT_NOT_LINKED`) |
+| 있고, 사용 중지됨 | 401 `DEVICE_REVOKED` — 토큰을 주지 않는다(사용 중지 그대로. 과제 QR + 승인부터) |
+| 있고, 살아 있는 연결이 있음 | 409 `DEVICE_ALREADY_LINKED` — 토큰을 주지 않는다(기존 토큰도 그대로. "다시 연결"은 §0.10 재인증) |
+| 있고, 살아 있는 연결이 없음(모두 끊김) | 기기 정보만 바꾸고 새 토큰(이전 토큰 지움). `projects`에는 끊긴 과제만 `ENDED`로 보여 쓸 수 있는 과제가 없다 |
 
 ```json
 요청 {
@@ -410,11 +437,11 @@ Goono-ELN 서버 구현의 기준이며, 개발·테스트용 구현은 `app/moc
 }
 ```
 오류: 400 `BAD_REQUEST`(요청 형식 오류 — `loginId`·`password`가 없거나 `device`가 §0.7 규칙에 맞지 않음), 401 `INVALID_CREDENTIALS`, 403 `APP_DISABLED`, 403 `PASSWORD_LOGIN_DISABLED`,
-403 `DEVICE_NOT_ALLOWED`(예약 — §0.7), 429 `TOO_MANY_ATTEMPTS`(+ `Retry-After` 초)
+403 `DEVICE_NOT_ALLOWED`(예약 — §0.7), 401 `DEVICE_REVOKED`, 409 `DEVICE_ALREADY_LINKED`, 429 `TOO_MANY_ATTEMPTS`(+ `Retry-After` 초)
 
-평가 순서: 403 `APP_DISABLED` → 403 `PASSWORD_LOGIN_DISABLED` → 400 `BAD_REQUEST` → 429 → 401 `INVALID_CREDENTIALS` → 403 `DEVICE_NOT_ALLOWED`(예약) → 200.
-`INVALID_CREDENTIALS`는 §0.11의 IP별 실패 횟수(5회/10분)에 **같은 통에 합산**된다. 기기 묶음은 §0.12와 같다(같은 연구원·같은 기기면 토큰만 새로,
-사용 중지 해제).
+평가 순서: 403 `APP_DISABLED` → 403 `PASSWORD_LOGIN_DISABLED` → 400 `BAD_REQUEST` → 429 → 401 `INVALID_CREDENTIALS` → 403 `DEVICE_NOT_ALLOWED`(예약)
+→ 401 `DEVICE_REVOKED` → 409 `DEVICE_ALREADY_LINKED` → 200. `INVALID_CREDENTIALS`는 §0.11의 IP별 실패 횟수(5회/10분)에 **같은 통에 합산**된다
+(`DEVICE_REVOKED`·`DEVICE_ALREADY_LINKED`는 실패로 세지 않는다).
 
 ## 2. 토큰 갱신 `POST /devices/refresh`
 
@@ -563,8 +590,9 @@ Goono-ELN 서버 구현의 기준이며, 개발·테스트용 구현은 `app/moc
   이후 그 기기의 버전 업로드는 409 `NOT_EDIT_OWNER`. 연결 끊김·중지(§0.12)는 이것과 같은 이력 종류(`NOTE_EDIT_RECLAIM`)로 **자동으로** 되돌린다 —
   같은 기기를 다른 연구원이 연결하면 그 승인 때 이전 연구원의 기기 작성 중 노트가 자동으로 `WEB`이 된다.
 - 편집 위치가 `DEVICE`인 노트는 작성자 위임(단건·직번변경 일괄)도 거부한다.
-- 과제 구성원 삭제(`ElnProjectMemberService.deleteProjectMembers`)가 성공하면 그 연구원의 그 과제 연결을 곧바로 끊는다(`MEMBER_REMOVED`). 다른
-  경로로 구성원이 빠진 경우는 요청 때 `PROJECT_NOT_LINKED`로 막히고 하루 작업이 기록한다.
+- 과제 구성원 삭제(`ElnProjectMemberService.deleteProjectMembers`)가 성공하면 그 연구원의 그 과제 연결을 **그 자리에서** 끊는다(`MEMBER_REMOVED`,
+  노트 WEB, 이력 작성자 = 삭제한 사용자). 다른 경로로 구성원이 빠진 경우는 요청 때 `PROJECT_NOT_LINKED`로 막히고 하루 작업이 기록한다(작성자 `0`).
+  모의 서버의 `/__admin/projects/{projectMno}/remove-member`는 **뒤의 경우만** 흉내 낸다(곧바로 끊지 않고 하루 작업이 기록).
 - 기기 관리(마이페이지 `내 태블릿`): 사용자별 기기 목록(기기별 연결 과제·상태)과 사용 중지(`DEVICE_REVOKED` + 모든 연결 끊기). 기관이 기능을 꺼도
   목록·사용 중지는 쓸 수 있다.
 

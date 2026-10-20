@@ -45,7 +45,7 @@ async function call(method, p, body, token) {
   const text = await r.text();
   let json = null;
   try { json = JSON.parse(text); } catch { /* 본문이 JSON 이 아님 */ }
-  return { status: r.status, body: json };
+  return { status: r.status, body: json, headers: r.headers };
 }
 const admin = (p, body) => call(body === undefined ? 'GET' : 'POST', `/__admin${p}`, body);
 const api = (p, body, token) => call(body === undefined ? 'GET' : 'POST', `/api/app/v1${p}`, body, token);
@@ -83,6 +83,8 @@ const linkOf = async (deviceId, loginId, projectMno) => {
 };
 
 const sha = (b) => crypto.createHash('sha256').update(b).digest('hex');
+/** 계약 §0.7 확인 번호: SHA-256(requestToken) hex 앞 8자 → 부호 없는 정수 % 10000, 4자리 */
+const confirmNumberOf = (requestToken) => String(parseInt(sha(requestToken).slice(0, 8), 16) % 10000).padStart(4, '0');
 /** 계약 §6 내용 해시 — images: [{ ref, bytes }] (업로드 + 재사용 모두) */
 function contentHash(html, images) {
   const h = crypto.createHash('sha256');
@@ -139,6 +141,10 @@ test('project QR: preview does not consume, pair → 202 PENDING, approve → AP
   assert.ok(pair.body.expiresInSeconds > 590 && pair.body.expiresInSeconds <= 600);
   assert.deepEqual(pair.body.project, { projectMno: 3, name: '시료 A 열처리' });
   assert.deepEqual(pair.body.user, { userMno: 12, loginId: 'researcher1', name: '김연구' });
+  // 확인 번호: 요청에서 정해지는 4자리 — 앱 대기 화면과 웹 승인 창(관리 상태)에 같은 값
+  assert.match(pair.body.confirmNumber, /^\d{4}$/);
+  assert.equal(pair.body.confirmNumber, confirmNumberOf(pair.body.requestToken));
+  assert.equal((await state()).requests[0].confirmNumber, pair.body.confirmNumber);
   assert.ok((await state()).pairingCodes[0].usedAt);
   // 쓴 코드는 미리보기·연결 모두 401
   assert.equal(errCode(await api('/devices/pair/preview', { pairingCode: issued.code })), 'INVALID_PAIRING_CODE');
@@ -266,7 +272,9 @@ test('unlink returns device notes to WEB with history 연결 끊김', async () =
 
   const s3 = await noteState(n3.noteMno);
   assert.deepEqual(s3.editLocation, { type: 'WEB' });
-  assert.ok(s3.history.some((h) => h.event === 'RECLAIMED' && h.reason === '연결 끊김'), JSON.stringify(s3.history));
+  assert.ok(s3.history.some((h) => h.event === 'RECLAIMED' && h.reason === '연결 끊김' && h.by === 12), JSON.stringify(s3.history)); // 작성자 = 책임자(researcher1)
+  // 책임자가 아닌 사람은 끊을 수 없다
+  assert.equal((await admin('/unlink', { deviceId: 'dev-A', loginId: 'researcher1', projectMno: 4, leaderLoginId: 'researcher2' })).status, 403);
   assert.equal((await noteState(n4.noteMno)).editLocation.type, 'DEVICE');
   const link = await linkOf('dev-A', 'researcher1', 3);
   assert.equal(link.status, 'ENDED');
@@ -350,14 +358,19 @@ test('reauth with expired token keeps links; no live links → 403 NO_PROJECT_LI
   assert.deepEqual(re.body.user, { userMno: 12, loginId: 'researcher1', name: '김연구' });
   assert.deepEqual(byMno(re.body.projects), [{ projectMno: 3, name: '시료 A 열처리' }, { projectMno: 4, name: '세포 배양 조건 최적화' }]);
   assert.equal(re.body.token, undefined);
+  assert.equal(re.body.confirmNumber, confirmNumberOf(re.body.requestToken));
   const req = (await state()).requests.find((r) => r.status === 'PENDING');
   assert.equal(req.kind, 'REAUTH');
+  assert.equal(req.confirmNumber, re.body.confirmNumber);
 
   assert.equal((await admin('/approve', { loginId: 'researcher1' })).body.status, 'APPROVED');
   const st = await api('/devices/pair/status', { requestToken: re.body.requestToken });
   assert.equal(st.body.status, 'APPROVED');
   const fresh = st.body.token;
   assert.deepEqual(byMno(await projectsOf(fresh)).map((p) => [p.projectMno, p.linkStatus]), [[3, 'ACTIVE'], [4, 'ACTIVE']]);
+  // 재인증 토큰을 받으면 앞(만료된) 토큰은 더는 쓸 수 없다 — 재인증에도
+  assert.equal(errCode(await get('/bootstrap', token)), 'UNAUTHORIZED');
+  assert.equal(errCode(await api('/devices/reauth', {}, token)), 'UNAUTHORIZED');
 
   // 살아 있는 연결이 없으면 403 NO_PROJECT_LINKS
   await admin('/unlink', { deviceId: 'dev-A', loginId: 'researcher1', projectMno: 3 });
@@ -505,4 +518,133 @@ test('reusedRefs: stored ref accepted and counted in hash; unknown → 400 REUSE
   const gone = await uploadVersion(token, note.noteMno, { clientVersionId: 'v3', baseVersionId: v2.body.versionId, html: page(A.ref), reusedRefs: [A.ref], hashImages: [A] });
   assert.equal(gone.status, 400);
   assert.equal(errCode(gone), 'REUSED_REF_MISSING');
+});
+
+test('approved but not collected within the delivery window → 410 PAIRING_EXPIRED', async () => {
+  await admin('/config', { deliveryTtlMs: 1 });
+  const { code } = await issue('researcher1', 3);
+  const pair = await api('/devices/pair', { pairingCode: code, device: device('dev-A') });
+  assert.equal((await admin('/approve', { loginId: 'researcher1' })).body.status, 'APPROVED');
+  await sleep(30);
+  const st = await api('/devices/pair/status', { requestToken: pair.body.requestToken });
+  assert.equal(st.status, 410);
+  assert.equal(errCode(st), 'PAIRING_EXPIRED');
+});
+
+test('another user approving leaves the request untouched', async () => {
+  const { code } = await issue('researcher1', 3);
+  const pair = await api('/devices/pair', { pairingCode: code, device: device('dev-A') });
+  assert.equal((await admin('/approve', { loginId: 'researcher2' })).status, 404);
+  assert.equal((await admin('/approve', { loginId: 'researcher2', decision: 'REJECT' })).status, 404);
+  const st = await api('/devices/pair/status', { requestToken: pair.body.requestToken });
+  assert.equal(st.body.status, 'PENDING');
+  assert.equal((await state()).requests[0].status, 'PENDING');
+  assert.equal((await admin('/approve', { loginId: 'researcher1' })).body.status, 'APPROVED');
+});
+
+test('preview failures share the IP limit with pair', async () => {
+  const { code } = await issue('researcher1', 3);
+  for (let i = 0; i < 3; i++) assert.equal(errCode(await api('/devices/pair/preview', { pairingCode: 'ZZZZ-ZZZZ' })), 'INVALID_PAIRING_CODE');
+  for (let i = 0; i < 2; i++) assert.equal(errCode(await api('/devices/pair', { pairingCode: 'ZZZZ-ZZZZ', device: device('dev-A') })), 'INVALID_PAIRING_CODE');
+  const pv = await api('/devices/pair/preview', { pairingCode: code }); // 맞는 코드도 막힘
+  assert.equal(pv.status, 429);
+  assert.equal(errCode(pv), 'TOO_MANY_ATTEMPTS');
+  assert.ok(Number(pv.headers.get('retry-after')) > 0);
+  assert.equal(errCode(await api('/devices/pair', { pairingCode: code, device: device('dev-A') })), 'TOO_MANY_ATTEMPTS');
+  assert.equal((await state()).pairingCodes[0].usedAt, null);
+});
+
+test('a ref stored in another note → REUSED_REF_MISSING', async () => {
+  const token = await connect('researcher1', 3);
+  const n1 = (await createNote(token, 3, 'n1')).body;
+  const n2 = (await createNote(token, 3, 'n2')).body;
+  const A = { ref: 'page-aaaaaaaaaaaaaaaa', bytes: Buffer.from('png-bytes-A') };
+  assert.equal((await uploadVersion(token, n1.noteMno, { clientVersionId: 'n1v1', html: page(A.ref), uploads: [A] })).status, 201);
+  const r = await uploadVersion(token, n2.noteMno, { clientVersionId: 'n2v1', html: page(A.ref), reusedRefs: [A.ref], hashImages: [A] });
+  assert.equal(r.status, 400);
+  assert.equal(errCode(r), 'REUSED_REF_MISSING');
+});
+
+test('revoke cancels in-flight requests; new QR + approval still works', async () => {
+  await connect('researcher1', 3);
+  const token = await connect('researcher1', 4);
+  // 훔친 토큰으로 재인증 요청, 같은 기기 ID로 과제 QR 연결 요청
+  const re = await api('/devices/reauth', {}, token);
+  assert.equal(re.status, 202);
+  const { code } = await issue('researcher1', 3);
+  const link = await api('/devices/pair', { pairingCode: code, device: device('dev-A') });
+  assert.equal(link.status, 202);
+  // 연구원이 잘못 승인(가장 오래된 = 재인증), 도둑이 한 번 받아 감
+  assert.equal((await admin('/approve', { loginId: 'researcher1' })).body.status, 'APPROVED');
+  const stolen = await api('/devices/pair/status', { requestToken: re.body.requestToken });
+  assert.equal(stolen.body.status, 'APPROVED');
+
+  await admin('/devices/dev-A/revoke', {});
+  const s = await state();
+  // 앞의 두 연결 승인도 아직 수령 기한 안이라(다시 확인하면 새 토큰) 함께 CANCELED
+  assert.deepEqual(s.requests.map((r) => r.status), ['CANCELED', 'CANCELED', 'CANCELED', 'CANCELED'], JSON.stringify(s.requests));
+  for (const t of [re.body.requestToken, link.body.requestToken]) {
+    const st = await api('/devices/pair/status', { requestToken: t });
+    assert.equal(st.status, 410);
+    assert.equal(errCode(st), 'PAIRING_EXPIRED');
+  }
+  assert.equal((await admin('/approve', { loginId: 'researcher1' })).status, 404);
+  assert.equal((await state()).devices[0].revoked, true);
+  assert.equal(errCode(await get('/bootstrap', stolen.body.token)), 'DEVICE_REVOKED');
+
+  // 정상 경로: 사용 중지 뒤 새 과제 QR → 승인 → 토큰(사용 중지 풀림)
+  const fresh = await connect('researcher1', 3);
+  assert.equal((await state()).devices[0].revoked, false);
+  assert.deepEqual(byMno(await projectsOf(fresh)).map((p) => [p.projectMno, p.linkStatus]), [[3, 'ACTIVE'], [4, 'ENDED']]);
+});
+
+test('register does not restore links or lift a revoke', async () => {
+  await admin('/config', { passwordLogin: true });
+  const reg = (id, loginId = 'researcher1') => api('/devices/register', { loginId, password: 'goono1234', device: device(id) });
+  await connect('researcher1', 3); // dev-A: 살아 있는 연결
+  const linked = await reg('dev-A');
+  assert.equal(linked.status, 409);
+  assert.equal(errCode(linked), 'DEVICE_ALREADY_LINKED');
+  await admin('/devices/dev-A/revoke', {});
+  const revoked = await reg('dev-A');
+  assert.equal(revoked.status, 401);
+  assert.equal(errCode(revoked), 'DEVICE_REVOKED');
+  assert.equal((await state()).devices.find((d) => d.deviceId === 'dev-A').revoked, true);
+  // 살아 있는 연결이 없는(끊긴) 묶음은 토큰만 — 끊긴 과제는 ENDED 로 보인다
+  await connect('researcher2', 4, 'dev-C');
+  await admin('/unlink', { deviceId: 'dev-C', loginId: 'researcher2', projectMno: 4 });
+  const ended = await reg('dev-C', 'researcher2');
+  assert.equal(ended.status, 200);
+  assert.deepEqual(await projectsOf(ended.body.token), [{ projectMno: 4, name: '세포 배양 조건 최적화', writable: false, linkStatus: 'ENDED' }]);
+  const fresh = await reg('dev-N');
+  assert.equal(fresh.status, 200);
+  assert.deepEqual(await projectsOf(fresh.body.token), []);
+});
+
+test('live links for reauth use effective status', async () => {
+  await connect('researcher1', 3);
+  await connect('researcher1', 4);
+  const token = await connect('researcher1', 5); // 편집 불가 과제 → SUSPENDED 도 살아 있다
+  await admin('/projects/3/remove-member', { loginId: 'researcher1' }); // 저장 상태는 ACTIVE 지만 실제로는 끊김
+  const re = await api('/devices/reauth', {}, token);
+  assert.equal(re.status, 202);
+  assert.deepEqual(byMno(re.body.projects).map((p) => p.projectMno), [4, 5]);
+  await admin('/projects/4/remove-member', { loginId: 'researcher1' });
+  await admin('/projects/5/remove-member', { loginId: 'researcher1' });
+  const none = await api('/devices/reauth', {}, token);
+  assert.equal(none.status, 403);
+  assert.equal(errCode(none), 'NO_PROJECT_LINKS');
+});
+
+test('token delivery refreshes last seen (re-linked idle bundle is not ended as inactive)', async () => {
+  await admin('/config', { tokenTtlMs: 60 });
+  const token = await connect('researcher1', 3);
+  await admin('/config', { tokenTtlMs: null });
+  await admin('/devices/dev-A/last-seen', { loginId: 'researcher1', daysAgo: 40 });
+  await sleep(100);
+  const re = await api('/devices/reauth', {}, token);
+  await admin('/approve', { loginId: 'researcher1' });
+  assert.equal((await api('/devices/pair/status', { requestToken: re.body.requestToken })).body.status, 'APPROVED');
+  assert.deepEqual((await admin('/daily', {})).body, { suspended: 0, resumed: 0, ended: 0 });
+  assert.equal((await linkOf('dev-A', 'researcher1', 3)).status, 'ACTIVE');
 });
