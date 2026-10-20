@@ -776,6 +776,34 @@ try {
     s1 = await st();
     assert(s1.scale > s0.scale * 1.5 && s1.n === s0.n, `핀치 확대 (${s0.scale.toFixed(2)} → ${s1.scale.toFixed(2)}), 획 없음`);
     await page.evaluate(() => window.__engine.fitWidth());
+
+    // 7) 펜을 화면 위에 띄운 채(호버 — M2 이후 iPad·Pencil Pro) 다른 손으로 넘기기·핀치: 막히지 않는다
+    //    (호버는 손바닥 의심 신호일 뿐 — 펜이 닿아 있거나 막 뗀 것만 손가락을 무시한다)
+    await settle();
+    const hov = (i) => ['pointermove', 99, 'pen', 200 + i * 3, 300 + i * 2]; // buttons 0 = 떠 있음
+    s0 = await st();
+    const [px, py] = [t.c[0] + 40, t.c[1] + 220];
+    await pointerSeq([hov(0), 20, ['pointerdown', 81, 'touch', px, py],
+      ...[1, 2, 3, 4, 5, 6, 7, 8].flatMap((i) => [hov(i), ['pointermove', 81, 'touch', px, py - i * 10]]),
+      hov(9), ['pointerup', 81, 'touch', px, py - 80]]);
+    s1 = await st();
+    assert(Math.abs((s1.ty - s0.ty) + 80) < 1 && s1.n === s0.n, `펜 호버 중 한 손가락 넘기기 (${(s1.ty - s0.ty).toFixed(1)}px), 획 없음`);
+    s0 = s1;
+    await pointerSeq([hov(10), 20, ['pointerdown', 82, 'touch', px - 60, py], hov(11), ['pointerdown', 83, 'touch', px + 60, py],
+      ...[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].flatMap((i) => [hov(11 + i), ['pointermove', 82, 'touch', px - 60 - i * 10, py], ['pointermove', 83, 'touch', px + 60 + i * 10, py]]),
+      ['pointerup', 82, 'touch', px - 160, py], ['pointerup', 83, 'touch', px + 160, py]]);
+    s1 = await st();
+    assert(s1.scale > s0.scale * 1.5 && s1.n === s0.n, `펜 호버 중 두 손가락 핀치 (${s0.scale.toFixed(2)} → ${s1.scale.toFixed(2)}), 획 없음`);
+    assert(!(await page.evaluate(() => !!window.__engine.gesture || !!window.__engine.drawing)), '입력 상태 정리');
+    // 펜이 닿아 있으면(접촉) 손가락은 여전히 무시된다
+    s0 = await st();
+    await pointerSeq([['pointerdown', 84, 'pen', 200, 300], ['pointerdown', 85, 'touch', px, py],
+      ...[1, 2, 3, 4].map((i) => ['pointermove', 85, 'touch', px, py - i * 20]), ['pointerup', 85, 'touch', px, py - 80],
+      ['pointerup', 84, 'pen', 200, 300]]);
+    s1 = await st();
+    assert(s1.ty === s0.ty && s1.scale === s0.scale && s1.n - s0.n <= 1, `펜이 닿아 있는 동안 손가락 넘기기 없음 (${(s1.ty - s0.ty).toFixed(1)})`);
+    if (s1.n > s0.n) await tid('undo').click(); // 펜으로 찍은 점
+    await page.evaluate(() => window.__engine.fitWidth());
     await cdp.detach();
     await waitSaved();
     await shot('10-finger-input');
@@ -873,6 +901,25 @@ try {
     await E((e) => e.fitWidth());
     const c0 = await insertPhoto(BLUE);
     assert(c0.page === 0, '두 번째 사진 1쪽');
+    // 4-0) 마우스: 손잡이 위에서 크기 커서 → 다른 도구로 바꾸면 커서가 돌아오고, 올가미가 아닌 도구로는 손잡이 위에서도 보통 커서
+    const cursor = () => E((e) => e.canvas.style.cursor);
+    let hse = await handle('se');
+    await page.mouse.move(hse[0] - 30, hse[1] - 30);
+    await page.mouse.move(hse[0], hse[1]);
+    assert((await cursor()) === 'nwse-resize', `올가미: 손잡이 위 크기 커서 (${await cursor()})`);
+    await tid('tool-pen').click();
+    assert((await cursor()) === '', `도구를 바꾸면 커서가 돌아옴 (${await cursor()})`);
+    await E((e) => e.selectObject(e.strokes.filter((s) => s.tool === 'image').pop())); // 선택은 남기고 도구는 펜
+    await page.mouse.move(hse[0] - 1, hse[1] - 1);
+    assert((await cursor()) === '', `펜 도구로는 손잡이 위에서도 보통 커서 (${await cursor()})`);
+    await tid('tool-lasso').click();
+    await E((e) => e.selectObject(e.strokes.filter((s) => s.tool === 'image').pop()));
+    await page.mouse.move(hse[0], hse[1]);
+    assert((await cursor()) === 'nwse-resize', '올가미로 돌아오면 다시 크기 커서');
+    await E((e) => { e.tool = 'pen'; }); // 호스트가 도구 값을 바로 바꿔도 (단축키 등)
+    assert((await cursor()) === '', '엔진 도구를 바꾸면 커서가 돌아옴');
+    await E((e) => { e.tool = 'lasso'; e.selectObject(e.strokes.filter((s) => s.tool === 'image').pop()); }); // 팔레트는 그대로 올가미
+    await page.mouse.move(10, 10);
     s0 = await st();
     const se = await handle('se');
     await penDrag(se, [se[0] + 80, se[1] + 10]);
@@ -1123,6 +1170,7 @@ try {
     await keyboard(0);
     await tid('tool-pen').click();
     assert(await E((e) => e.strokes.some((s) => s.tool === 'text' && /^고침 첫 줄\n2줄/.test(s.text))), '첫 줄을 고친 20줄 글상자');
+
 
     // 수식 화면 키보드: 뜨면 --kb, 내리면 0, 키보드가 뜬 채로 대화상자를 닫아도 0
     const kbVar = () => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--kb').trim());

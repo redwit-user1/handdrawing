@@ -30,7 +30,7 @@ class DrawingEngine {
     this.maxScale = 8;
 
     // 도구 상태
-    this.tool = 'pen';            // pen | highlighter | eraser | pan | shape | lasso
+    this._tool = 'pen';           // pen | highlighter | eraser | pan | shape | lasso (호스트는 this.tool 로)
     this.shape = 'line';          // line | arrow | rect | ellipse
     this.color = '#1f2328';
     this.size = 5;                // 월드 좌표 기준 기본 굵기
@@ -48,7 +48,8 @@ class DrawingEngine {
     this.pointers = new Map();    // pointerId -> {x, y, type}
     this.drawing = null;          // 진행 중인 입력 상태
     this.gesture = null;          // 핀치/패닝 상태
-    this.penLastSeen = 0;         // 팜 리젝션용: 마지막 펜 이벤트 시각
+    this.penLastSeen = 0;         // 팜 리젝션용: 마지막으로 펜이 닿아 있던 시각 (손가락 무시 600ms 기준)
+    this.penHoverSeen = 0;        // 펜이 화면 위에 떠 있던(호버) 마지막 시각 — 손바닥 의심(탭·옮기기 막기)에만 쓴다
     this.eraserPos = null;        // 지우개 커서 표시용 (화면 좌표)
     this.erasedInDrag = [];       // 드래그 한 번 동안 지운 획 모음 (undo 단위)
 
@@ -76,6 +77,13 @@ class DrawingEngine {
 
     this._bindEvents();
     this.resize();
+  }
+
+  /** 지금 도구. 바꾸면 손잡이 위에서 바꾼 크기 커서(마우스)를 지운다 — 다른 도구에 남지 않게 */
+  get tool() { return this._tool; }
+  set tool(v) {
+    this._tool = v;
+    if (this.canvas && this.canvas.style.cursor) this.canvas.style.cursor = '';
   }
 
   /* ============== 좌표 변환 ============== */
@@ -850,9 +858,15 @@ class DrawingEngine {
   _isPenEraser(e) { return e.pointerType === 'pen' && (e.buttons & 32) !== 0; }
 
   _rejectPalm(e) {
-    // 펜이 활성/최근 사용 중이면 손바닥(터치) 입력 무시
+    // 펜이 닿아 있거나 막 떼었으면(600ms) 손바닥(터치) 입력 무시 — 펜이 떠 있기만 한 것(호버)은 보지 않는다.
+    // 호버하는 펜을 든 채 다른 손으로 넘기기·핀치할 수 있어야 한다 (호버는 _sincePen 의 약한 신호로만)
     return e.pointerType === 'touch' &&
       (this._penPointerActive() || performance.now() - this.penLastSeen < 600);
+  }
+
+  /** 펜(닿음·호버)을 본 지 몇 ms — 손바닥 의심(탭·옮기기·손잡이 막기, 넘기기는 됨)용 */
+  _sincePen(now = performance.now()) {
+    return now - Math.max(this.penLastSeen, this.penHoverSeen);
   }
 
   _penPointerActive() {
@@ -921,7 +935,7 @@ class DrawingEngine {
         fingerTap: true, pointerId: e.pointerId, pointerType: e.pointerType,
         sx: x, sy: y, t0: now, wx: w.x, wy: w.y,
         inSel: this._selectionContains(w.x, w.y),
-        palm: isPalmSuspect({ penDown: this._penPointerActive(), sincePen: now - this.penLastSeen, width: e.width, height: e.height }),
+        palm: isPalmSuspect({ penDown: this._penPointerActive(), sincePen: this._sincePen(now), width: e.width, height: e.height }),
       };
       // 크기 손잡이 — 손바닥으로 의심되면 잡지 않는다
       this.drawing.handle = this.drawing.palm ? null : this._handleAt(x, y);
@@ -1009,11 +1023,15 @@ class DrawingEngine {
       this.eraserPos = this._pos(e);
       this.requestRender();
     }
-    // 펜이 화면 위에 떠 있을 때(호버)도 손바닥 무시 시간을 늘린다 — 펜을 대기 직전에 닿는 손바닥 거르기
-    if (this._isPen(e)) this.penLastSeen = performance.now();
-    // 마우스가 크기 손잡이 위에 있으면 커서로 알려 준다
-    if (e.pointerType === 'mouse' && !this.pointers.size && this.tool === 'lasso') {
-      const p = this._pos(e), c = this._handleAt(p.x, p.y);
+    // 펜: 닿아서 움직이면 손바닥 무시 시간을 늘리고, 떠 있으면(호버) 손바닥 의심 신호만 남긴다 —
+    // 펜을 대기 직전에 닿는 손바닥의 탭·옮기기는 거르되, 다른 손의 넘기기·핀치는 막지 않는다
+    if (this._isPen(e)) {
+      if (this.pointers.has(e.pointerId)) this.penLastSeen = performance.now();
+      else this.penHoverSeen = performance.now();
+    }
+    // 마우스가 크기 손잡이 위에 있으면 커서로 알려 준다 (올가미가 아니면 지운다)
+    if (e.pointerType === 'mouse' && !this.pointers.size) {
+      const p = this._pos(e), c = this.tool === 'lasso' ? this._handleAt(p.x, p.y) : null;
       const cur = c ? (c === 'nw' || c === 'se' ? 'nwse-resize' : 'nesw-resize') : '';
       if (this.canvas.style.cursor !== cur) this.canvas.style.cursor = cur;
     }
@@ -1037,7 +1055,7 @@ class DrawingEngine {
       // 누른 곳부터 따라오도록 그때까지 움직인 만큼 바로 반영한다
       const out = fingerOutcome({
         dist: Math.hypot(x - d.sx, y - d.sy), ms: 0, ended: false,
-        inSelection: d.inSel, onHandle: !!d.handle, palm: d.palm || this.penLastSeen > d.t0,
+        inSelection: d.inSel, onHandle: !!d.handle, palm: d.palm || Math.max(this.penLastSeen, this.penHoverSeen) > d.t0,
       });
       // 옮기기·크기 바꾸기는 누른 곳부터 (그 사이 선택이 풀렸으면 넘기기)
       if (out === 'resize' && this._startResize(e, d.handle, { x: d.wx, y: d.wy })) {
@@ -1127,7 +1145,7 @@ class DrawingEngine {
       const { x, y } = this._pos(e);
       const out = fingerOutcome({
         dist: Math.hypot(x - d.sx, y - d.sy), ms: performance.now() - d.t0, ended: true,
-        inSelection: d.inSel, onHandle: !!d.handle, palm: d.palm || this.penLastSeen > d.t0,
+        inSelection: d.inSel, onHandle: !!d.handle, palm: d.palm || Math.max(this.penLastSeen, this.penHoverSeen) > d.t0,
       });
       if (out === 'tap') this._fingerTap(d.wx, d.wy);
       return; // 'keep'(선택 안 탭 → 선택 유지)·'none'(손바닥 의심·길게 누름)은 아무것도 하지 않는다
